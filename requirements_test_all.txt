@@ -1440,6 +1440,9 @@ vsure==1.7.3
 # homeassistant.components.vultr
 vultr==0.1.2
 
+# homeassistant.components.vzug
+vzug-api==0.0.7
+
 # homeassistant.components.samsungtv
 # homeassistant.components.wake_on_lan
 wakeonlan==2.0.1
