@@ -1,4 +1,4 @@
-"""Config flow for the VZUG integration."""
+"""Config flow for the V-ZUG integration."""
 from __future__ import annotations
 
 import logging

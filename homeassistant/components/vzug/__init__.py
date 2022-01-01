@@ -1,4 +1,4 @@
-"""The VZUG integration."""
+"""The V-ZUG integration."""
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
@@ -13,7 +13,7 @@ PLATFORMS: list[str] = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Create device poller for every VZUG device."""
+    """Create device poller for every V-ZUG device."""
 
     hostname = entry.data[CONF_HOST]
     username = entry.data.get(CONF_USERNAME, "")

@@ -1,4 +1,4 @@
-"""Test the vzug config flow."""
+"""Test the V-ZUG config flow."""
 from unittest.mock import patch
 
 from homeassistant import config_entries

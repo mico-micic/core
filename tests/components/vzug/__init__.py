@@ -1,1 +1,1 @@
-"""Tests for the vzug integration."""
+"""Tests for the V-ZUG integration."""

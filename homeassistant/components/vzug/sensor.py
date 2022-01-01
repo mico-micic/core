@@ -1,8 +1,9 @@
-"""VZUG sensors module."""
+"""V-ZUG sensors module."""
 
 from __future__ import annotations
 
 from datetime import tzinfo
+from enum import Enum
 
 from vzug import DEVICE_TYPE_WASHING_MACHINE
 
@@ -19,6 +20,20 @@ from .vzug_poller import VZugPoller
 TIME_STR_FORMAT = "%H:%M"
 ICON_PROGRAM = {True: "mdi:washing-machine", False: "mdi:washing-machine-off"}
 STATE_TEXT = {True: "active", False: "inactive"}
+
+
+class EnumOptiDos(Enum):
+    """Enum used for the optiDos A/B sensor."""
+
+    A = "A"
+    B = "B"
+
+
+class EnumAvgTotal(Enum):
+    """Enum used for the power and water consumption sensors."""
+
+    AVG = "Average"
+    TOTAL = "Total"
 
 
 # This function is called as part of the __init__.async_setup_entry (via the
@@ -38,12 +53,14 @@ async def async_setup_entry(
         sensors.append(VZugDevice(poller))
 
         if DEVICE_TYPE_WASHING_MACHINE in poller.device.device_type:
-            sensors.append(WaterConsumptionTotalSensor(poller))
-            sensors.append(WaterConsumptionAvgSensor(poller))
-            sensors.append(PowerConsumptionTotalSensor(poller))
-            sensors.append(PowerConsumptionAvgSensor(poller))
             sensors.append(ProgramSensor(poller))
             sensors.append(ProgramEndSensor(poller, timezone))
+            sensors.append(WaterConsumptionSensor(poller, EnumAvgTotal.TOTAL))
+            sensors.append(WaterConsumptionSensor(poller, EnumAvgTotal.AVG))
+            sensors.append(PowerConsumptionSensor(poller, EnumAvgTotal.TOTAL))
+            sensors.append(PowerConsumptionSensor(poller, EnumAvgTotal.AVG))
+            sensors.append(OptiDosSensor(poller, EnumOptiDos.A))
+            sensors.append(OptiDosSensor(poller, EnumOptiDos.B))
 
     async_add_entities(sensors)
 
@@ -100,7 +117,7 @@ class SensorBase(Entity):
 
 
 class VZugDevice(SensorBase):
-    """Representation of a VZUG device."""
+    """Representation of a V-ZUG device."""
 
     # Enable polling only for the device class. In this way we use the hass
     # scheduler to trigger the poller.
@@ -126,7 +143,8 @@ class VZugDevice(SensorBase):
             "name": super()._get_device_name(),
             "sw_version": "",
             "model": self.device.model_desc,
-            "manufacturer": "VZug",
+            "manufacturer": "V-ZUG",
+            "configuration_url": f"http://{self._poller.hostname}",
             "hw_version": self.device.serial,
         }
 
@@ -145,12 +163,22 @@ class VZugDevice(SensorBase):
         await self._poller.async_poll()
 
 
-class WaterConsumptionTotalSensor(SensorBase):
-    """Sensor for the total water consumption."""
+class WaterConsumptionSensor(SensorBase):
+    """Sensor for the water consumption."""
 
-    def __init__(self, poller: VZugPoller) -> None:
+    def __init__(self, poller: VZugPoller, avg_total: EnumAvgTotal) -> None:
         """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "total_water_consumption", "Total Water Consumption")
+
+        if EnumAvgTotal.TOTAL is avg_total:
+            super().__init__(
+                poller, "total_water_consumption", "Total Water Consumption"
+            )
+        else:
+            super().__init__(
+                poller, "avg_water_consumption", "Average Water Consumption"
+            )
+
+        self._avg_total = avg_total
 
     @property
     def icon(self):
@@ -164,39 +192,29 @@ class WaterConsumptionTotalSensor(SensorBase):
 
     @property
     def state(self):
-        """Return total water consumption in liter."""
-        return self.device.water_consumption_l_total
+        """Return water consumption in liter."""
+        if EnumAvgTotal.TOTAL is self._avg_total:
+            return self.device.water_consumption_l_total
+        else:
+            return self.device.water_consumption_l_avg
 
 
-class WaterConsumptionAvgSensor(SensorBase):
-    """Sensor for the average water consumption."""
+class PowerConsumptionSensor(SensorBase):
+    """Sensor for the power consumption."""
 
-    def __init__(self, poller: VZugPoller) -> None:
+    def __init__(self, poller: VZugPoller, avg_total: EnumAvgTotal) -> None:
         """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "avg_water_consumption", "Average Water Consumption")
 
-    @property
-    def icon(self):
-        """Set water icon."""
-        return "mdi:water"
+        if EnumAvgTotal.TOTAL is avg_total:
+            super().__init__(
+                poller, "total_power_consumption", "Total Power Consumption"
+            )
+        else:
+            super().__init__(
+                poller, "avg_power_consumption", "Average Power Consumption"
+            )
 
-    @property
-    def unit_of_measurement(self) -> str:
-        """Set unit to liter."""
-        return VOLUME_LITERS
-
-    @property
-    def state(self):
-        """Return average water consumption in liter."""
-        return self.device.water_consumption_l_avg
-
-
-class PowerConsumptionTotalSensor(SensorBase):
-    """Sensor for the total power consumption."""
-
-    def __init__(self, poller: VZugPoller) -> None:
-        """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "total_power_consumption", "Total Power Consumption")
+        self._avg_total = avg_total
 
     @property
     def icon(self):
@@ -210,31 +228,11 @@ class PowerConsumptionTotalSensor(SensorBase):
 
     @property
     def state(self):
-        """Return total power consumption in kWh."""
-        return self.device.power_consumption_kwh_total
-
-
-class PowerConsumptionAvgSensor(SensorBase):
-    """Sensor for the average power consumption."""
-
-    def __init__(self, poller: VZugPoller) -> None:
-        """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "avg_power_consumption", "Average Power Consumption")
-
-    @property
-    def icon(self):
-        """Set lightnin-bolt icon."""
-        return "mdi:lightning-bolt"
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Set unit to kWh."""
-        return ENERGY_KILO_WATT_HOUR
-
-    @property
-    def state(self):
-        """Return average power consumption in kWh."""
-        return self.device.power_consumption_kwh_avg
+        """Return power consumption in kWh."""
+        if EnumAvgTotal.TOTAL is self._avg_total:
+            return self.device.power_consumption_kwh_total
+        else:
+            return self.device.power_consumption_kwh_avg
 
 
 class ProgramSensor(SensorBase):
@@ -263,7 +261,7 @@ class ProgramEndSensor(SensorBase):
 
     def __init__(self, poller: VZugPoller, timezone: tzinfo | None) -> None:
         """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "program_end", "Program end")
+        super().__init__(poller, "program_end", "Program End")
         self._timezone = timezone
 
     def _to_time_formatted(self) -> str:
@@ -283,3 +281,27 @@ class ProgramEndSensor(SensorBase):
     def state(self):
         """Return end time."""
         return self._to_time_formatted()
+
+
+class OptiDosSensor(SensorBase):
+    """Sensor for the optiDos status."""
+
+    def __init__(self, poller: VZugPoller, opti_dos: EnumOptiDos) -> None:
+        """Initialize the sensor with id and name suffix."""
+        super().__init__(
+            poller, f"optidos_{opti_dos.value}", f"optiDos {opti_dos.value} Status"
+        )
+        self._opti_dos_letter = opti_dos
+
+    @property
+    def icon(self):
+        """Set format-color-fill icon."""
+        return "mdi:format-color-fill"
+
+    @property
+    def state(self):
+        """Return optiDos status text."""
+        if EnumOptiDos.A is self._opti_dos_letter:
+            return self.device.optidos_a_status
+        else:
+            return self.device.optidos_b_status

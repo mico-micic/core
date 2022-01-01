@@ -1,4 +1,4 @@
-"""VZUG API poller module."""
+"""V-ZUG API poller module."""
 
 from typing import Callable, Set
 
@@ -45,6 +45,11 @@ class VZugPoller:
     def is_online(self):
         """Return whether the device is online or not."""
         return self._online
+
+    @property
+    def hostname(self):
+        """Return the devices hostname."""
+        return self._hostname
 
     def register_callback(self, callback: Callable[[], None]) -> None:
         """Register callback, called when Roller changes state."""
