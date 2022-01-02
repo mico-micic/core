@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import tzinfo
-from enum import Enum
+import logging
 
 from vzug import DEVICE_TYPE_WASHING_MACHINE
+from vzug.basic_device import BasicDevice
 
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ENERGY_KILO_WATT_HOUR, VOLUME_LITERS
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import homeassistant.util.dt as dt_util
 
@@ -21,19 +28,86 @@ TIME_STR_FORMAT = "%H:%M"
 ICON_PROGRAM = {True: "mdi:washing-machine", False: "mdi:washing-machine-off"}
 STATE_TEXT = {True: "active", False: "inactive"}
 
-
-class EnumOptiDos(Enum):
-    """Enum used for the optiDos A/B sensor."""
-
-    A = "A"
-    B = "B"
+_LOGGER = logging.getLogger(__name__)
 
 
-class EnumAvgTotal(Enum):
-    """Enum used for the power and water consumption sensors."""
+@dataclass
+class VZugSensorEntryDescription(SensorEntityDescription):
+    """Entry description class for V-ZUG sensors."""
 
-    AVG = "Average"
-    TOTAL = "Total"
+    value_attr: str | None = None
+    value_func: Callable | None = None
+    icon_func: Callable | None = None
+
+
+VZUG_DEVICE_DESCRIPTION = VZugSensorEntryDescription(
+    key="machine",
+    icon="mdi:washing-machine",
+    value_func=lambda sensor: STATE_TEXT.get(sensor.device.is_active),
+)
+
+WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
+    VZugSensorEntryDescription(
+        key="total_water_consumption",
+        name="Water Consumption Total",
+        icon="mdi:water",
+        native_unit_of_measurement=VOLUME_LITERS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_attr="water_consumption_l_total",
+    ),
+    VZugSensorEntryDescription(
+        key="avg_water_consumption",
+        name="Water Consumption Average",
+        icon="mdi:water",
+        native_unit_of_measurement=VOLUME_LITERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_attr="water_consumption_l_avg",
+    ),
+    VZugSensorEntryDescription(
+        key="total_power_consumption",
+        name="Power Consumption Total",
+        icon="mdi:lightning-bolt",
+        native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_attr="power_consumption_kwh_total",
+    ),
+    VZugSensorEntryDescription(
+        key="avg_power_consumption",
+        name="Power Consumption Average",
+        icon="mdi:lightning-bolt",
+        native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_attr="power_consumption_kwh_avg",
+    ),
+    VZugSensorEntryDescription(
+        key="optidos_a",
+        name="optiDos A Status",
+        icon="mdi:format-color-fill",
+        value_attr="optidos_a_status",
+    ),
+    VZugSensorEntryDescription(
+        key="optidos_b",
+        name="optiDos B Status",
+        icon="mdi:format-color-fill",
+        value_attr="optidos_b_status",
+    ),
+    VZugSensorEntryDescription(
+        key="program",
+        name="Program",
+        icon_func=lambda sensor: ICON_PROGRAM.get(sensor.device.is_active),
+        value_attr="program",
+    ),
+    VZugSensorEntryDescription(
+        key="program_end",
+        name="Program End",
+        icon="mdi:calendar-clock",
+        value_func=lambda sensor: sensor.device.get_date_time_end(
+            sensor.timezone
+        ).strftime(TIME_STR_FORMAT)
+        if sensor.device.is_active
+        else "-",
+    ),
+)
 
 
 # This function is called as part of the __init__.async_setup_entry (via the
@@ -48,35 +122,80 @@ async def async_setup_entry(
     timezone = dt_util.get_time_zone(hass.config.time_zone)
 
     # Get poller from hass.data entry created in __init__.async_setup_entry function
-    sensors: list[SensorBase] = []
+    sensors: list[SensorEntity] = []
     for poller in hass.data[DOMAIN].values():
-        sensors.append(VZugDevice(poller))
+        sensors.append(VZugDevice(poller, VZUG_DEVICE_DESCRIPTION, timezone))
 
         if DEVICE_TYPE_WASHING_MACHINE in poller.device.device_type:
-            sensors.append(ProgramSensor(poller))
-            sensors.append(ProgramEndSensor(poller, timezone))
-            sensors.append(WaterConsumptionSensor(poller, EnumAvgTotal.TOTAL))
-            sensors.append(WaterConsumptionSensor(poller, EnumAvgTotal.AVG))
-            sensors.append(PowerConsumptionSensor(poller, EnumAvgTotal.TOTAL))
-            sensors.append(PowerConsumptionSensor(poller, EnumAvgTotal.AVG))
-            sensors.append(OptiDosSensor(poller, EnumOptiDos.A))
-            sensors.append(OptiDosSensor(poller, EnumOptiDos.B))
+            for washing_maschine_desc in WASHING_MACHINE_DESCRIPTIONS:
+                sensors.append(VZugSensor(poller, washing_maschine_desc, timezone))
 
     async_add_entities(sensors)
 
 
-class SensorBase(Entity):
-    """This base class for all sensors including the device entity."""
+def _to_default_if_empty(value):
+    """Return a predefined string if input is a string type but empty."""
+    ret = value
+    if isinstance(value, str) and len(value) == 0:
+        ret = "-"
+    return ret
+
+
+class VZugSensor(SensorEntity):
+    """Basic class for all V-ZUG device sensors."""
 
     should_poll = False
 
-    def __init__(self, poller: VZugPoller, id_suffix: str, name_suffix: str) -> None:
-        """Use predefined prefix for id and name and set sensor specific suffix."""
-        self._poller = poller
+    def __init__(
+        self,
+        poller: VZugPoller,
+        description: VZugSensorEntryDescription,
+        timezone: tzinfo | None,
+    ) -> None:
+        """Set entity id and name so that this sensor will be mapped to the corresponding device."""
 
-        self.entity_id = f"{self._entity_id_prefix}.{id_suffix}"
-        self._attr_unique_id = f"{self.device.uuid}_{id_suffix}"
-        self._attr_name = f"{self._get_device_name()} {name_suffix}"
+        self._poller = poller
+        self._timezone = timezone
+
+        self.entity_id = f"{self.get_entity_id_prefix()}.{description.key}"
+        self._attr_unique_id = f"{self.device.uuid}_{description.key}"
+        self._attr_name = f"{self.get_device_name()} {description.name}"
+        self._vzug_entity_description = description
+        self.entity_description = description
+
+    def get_entity_id_prefix(self) -> str:
+        """Return the entity id prefix."""
+        return f"{DOMAIN}.{self.device.device_type}.{self.device.uuid}"
+
+    def get_device_name(self) -> str:
+        """Return the user readable device name."""
+        if len(self.device.device_name) == 0:
+            return self.device.model_desc
+
+        return self.device.device_name
+
+    @property
+    def timezone(self) -> tzinfo | None:
+        """Return current timezone used for date / time values."""
+        return self._timezone
+
+    @property
+    def device(self) -> BasicDevice:
+        """Return the device reference."""
+        return self._poller.device
+
+    @property
+    def available(self) -> bool:
+        """Forward call to VZugPoller::is_online."""
+        return self._poller.is_online
+
+    @property
+    def icon(self) -> str | None:
+        """Return the icon by calling the icon_func if defined."""
+        if self._vzug_entity_description.icon_func is not None:
+            return self._vzug_entity_description.icon_func(self)
+        else:
+            return super().icon
 
     # To link this entity to the VZug device, this property must return an
     # identifiers value matching that used in the VZugDevice class
@@ -86,26 +205,20 @@ class SensorBase(Entity):
         return {"identifiers": {(DOMAIN, self.device.uuid)}}
 
     @property
-    def available(self) -> bool:
-        """Forward call to VZugPoller::is_online."""
-        return self._poller.is_online
+    def native_value(self):
+        """Read device data as defined by the entry description (from value_attr / value_func)."""
 
-    def _get_device_name(self) -> str:
-        """Return the user readable device name."""
-        name = self.device.device_name
-        if len(name) == 0:
-            name = self.device.model_desc
+        if self._vzug_entity_description.value_func is not None:
+            return self._vzug_entity_description.value_func(self)
 
-        return name
+        attr = self._vzug_entity_description.value_attr
+        if hasattr(self.device, attr):
+            return _to_default_if_empty(getattr(self.device, attr))
 
-    @property
-    def device(self):
-        """Return the device reference."""
-        return self._poller.device
-
-    @property
-    def _entity_id_prefix(self) -> str:
-        return f"{DOMAIN}.{self.device.device_type}.{self.device.uuid}"
+        _LOGGER.error(
+            "Error reading device attribute! No or invalid value_func / value_attr defined for sensor with key %s",
+            self.entity_description.key,
+        )
 
     async def async_added_to_hass(self):
         """Register callback to get notfied when the device data was updated."""
@@ -116,21 +229,26 @@ class SensorBase(Entity):
         self._poller.remove_callback(self.async_write_ha_state)
 
 
-class VZugDevice(SensorBase):
+class VZugDevice(VZugSensor):
     """Representation of a V-ZUG device."""
 
     # Enable polling only for the device class. In this way we use the hass
     # scheduler to trigger the poller.
     should_poll = True
 
-    def __init__(self, poller: VZugPoller) -> None:
+    def __init__(
+        self,
+        poller: VZugPoller,
+        desc: VZugSensorEntryDescription,
+        timezone: tzinfo | None,
+    ) -> None:
         """Set id and name so that all other sensors can be referenced to this device."""
-        super().__init__(poller, "", "")
+
+        super().__init__(poller, desc, timezone)
 
         # https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
-        self._attr_unique_id = f"{self.device.uuid}_machine"
-        self.entity_id = super()._entity_id_prefix
-        self._attr_name = super()._get_device_name()
+        self.entity_id = self.get_entity_id_prefix()
+        self._attr_name = self.get_device_name()
 
     # Information about the devices that is sible in the UI.
     # https://developers.home-assistant.io/docs/device_registry_index/#device-properties
@@ -139,8 +257,7 @@ class VZugDevice(SensorBase):
         """Information about this entity/device."""
         return {
             "identifiers": {(DOMAIN, self.device.uuid)},
-            # If desired, the name for the device could be different to the entity
-            "name": super()._get_device_name(),
+            "name": self.get_device_name(),
             "sw_version": "",
             "model": self.device.model_desc,
             "manufacturer": "V-ZUG",
@@ -148,160 +265,6 @@ class VZugDevice(SensorBase):
             "hw_version": self.device.serial,
         }
 
-    @property
-    def icon(self):
-        """Set washing-maschine icon."""
-        return "mdi:washing-machine"
-
-    @property
-    def state(self):
-        """Return whether the device is active or not."""
-        return STATE_TEXT.get(self.device.is_active)
-
     async def async_update(self):
         """Poll for device data."""
         await self._poller.async_poll()
-
-
-class WaterConsumptionSensor(SensorBase):
-    """Sensor for the water consumption."""
-
-    def __init__(self, poller: VZugPoller, avg_total: EnumAvgTotal) -> None:
-        """Initialize the sensor with id and name suffix."""
-
-        if EnumAvgTotal.TOTAL is avg_total:
-            super().__init__(
-                poller, "total_water_consumption", "Total Water Consumption"
-            )
-        else:
-            super().__init__(
-                poller, "avg_water_consumption", "Average Water Consumption"
-            )
-
-        self._avg_total = avg_total
-
-    @property
-    def icon(self):
-        """Set water icon."""
-        return "mdi:water"
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Set unit to liter."""
-        return VOLUME_LITERS
-
-    @property
-    def state(self):
-        """Return water consumption in liter."""
-        if EnumAvgTotal.TOTAL is self._avg_total:
-            return self.device.water_consumption_l_total
-        else:
-            return self.device.water_consumption_l_avg
-
-
-class PowerConsumptionSensor(SensorBase):
-    """Sensor for the power consumption."""
-
-    def __init__(self, poller: VZugPoller, avg_total: EnumAvgTotal) -> None:
-        """Initialize the sensor with id and name suffix."""
-
-        if EnumAvgTotal.TOTAL is avg_total:
-            super().__init__(
-                poller, "total_power_consumption", "Total Power Consumption"
-            )
-        else:
-            super().__init__(
-                poller, "avg_power_consumption", "Average Power Consumption"
-            )
-
-        self._avg_total = avg_total
-
-    @property
-    def icon(self):
-        """Set lightnin-bolt icon."""
-        return "mdi:lightning-bolt"
-
-    @property
-    def unit_of_measurement(self) -> str:
-        """Set unit to kWh."""
-        return ENERGY_KILO_WATT_HOUR
-
-    @property
-    def state(self):
-        """Return power consumption in kWh."""
-        if EnumAvgTotal.TOTAL is self._avg_total:
-            return self.device.power_consumption_kwh_total
-        else:
-            return self.device.power_consumption_kwh_avg
-
-
-class ProgramSensor(SensorBase):
-    """Sensor for the active washing machine program."""
-
-    def __init__(self, poller: VZugPoller) -> None:
-        """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "program", "Program")
-
-    @property
-    def icon(self):
-        """Return washing machine icon depending if program is active or not."""
-        return ICON_PROGRAM.get(self.device.is_active)
-
-    @property
-    def state(self):
-        """Return program name if available."""
-        if len(self.device.program) == 0:
-            return "-"
-        else:
-            return self.device.program
-
-
-class ProgramEndSensor(SensorBase):
-    """Sensor for the active washing machine program."""
-
-    def __init__(self, poller: VZugPoller, timezone: tzinfo | None) -> None:
-        """Initialize the sensor with id and name suffix."""
-        super().__init__(poller, "program_end", "Program End")
-        self._timezone = timezone
-
-    def _to_time_formatted(self) -> str:
-        if self.device.is_active:
-            return self.device.get_date_time_end(self._timezone).strftime(
-                TIME_STR_FORMAT
-            )
-        else:
-            return "-"
-
-    @property
-    def icon(self):
-        """Set calendar-clock icon."""
-        return "mdi:calendar-clock"
-
-    @property
-    def state(self):
-        """Return end time."""
-        return self._to_time_formatted()
-
-
-class OptiDosSensor(SensorBase):
-    """Sensor for the optiDos status."""
-
-    def __init__(self, poller: VZugPoller, opti_dos: EnumOptiDos) -> None:
-        """Initialize the sensor with id and name suffix."""
-        super().__init__(
-            poller, f"optidos_{opti_dos.value}", f"optiDos {opti_dos.value} Status"
-        )
-        self._opti_dos_letter = opti_dos
-
-    @property
-    def icon(self):
-        """Set format-color-fill icon."""
-        return "mdi:format-color-fill"
-
-    @property
-    def state(self):
-        """Return optiDos status text."""
-        if EnumOptiDos.A is self._opti_dos_letter:
-            return self.device.optidos_a_status
-        else:
-            return self.device.optidos_b_status
