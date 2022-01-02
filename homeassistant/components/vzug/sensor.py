@@ -11,9 +11,10 @@ from vzug import DEVICE_TYPE_WASHING_MACHINE
 from vzug.basic_device import BasicDevice
 
 from homeassistant.components.sensor import (
+    STATE_CLASS_MEASUREMENT,
+    STATE_CLASS_TOTAL_INCREASING,
     SensorEntity,
     SensorEntityDescription,
-    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ENERGY_KILO_WATT_HOUR, VOLUME_LITERS
@@ -52,7 +53,7 @@ WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
         name="Water Consumption Total",
         icon="mdi:water",
         native_unit_of_measurement=VOLUME_LITERS,
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        state_class=STATE_CLASS_TOTAL_INCREASING,
         value_attr="water_consumption_l_total",
     ),
     VZugSensorEntryDescription(
@@ -60,7 +61,7 @@ WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
         name="Water Consumption Average",
         icon="mdi:water",
         native_unit_of_measurement=VOLUME_LITERS,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=STATE_CLASS_MEASUREMENT,
         value_attr="water_consumption_l_avg",
     ),
     VZugSensorEntryDescription(
@@ -68,7 +69,7 @@ WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
         name="Power Consumption Total",
         icon="mdi:lightning-bolt",
         native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        state_class=STATE_CLASS_TOTAL_INCREASING,
         value_attr="power_consumption_kwh_total",
     ),
     VZugSensorEntryDescription(
@@ -76,7 +77,7 @@ WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
         name="Power Consumption Average",
         icon="mdi:lightning-bolt",
         native_unit_of_measurement=ENERGY_KILO_WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=STATE_CLASS_MEASUREMENT,
         value_attr="power_consumption_kwh_avg",
     ),
     VZugSensorEntryDescription(
