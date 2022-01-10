@@ -47,6 +47,15 @@ VZUG_DEVICE_DESCRIPTION = VZugSensorEntryDescription(
     value_func=lambda sensor: STATE_TEXT.get(sensor.device.is_active),
 )
 
+COMMON_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
+    VZugSensorEntryDescription(
+        key="status",
+        name="Status",
+        icon="mdi:information-outline",
+        value_attr="status",
+    ),
+)
+
 WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
     VZugSensorEntryDescription(
         key="total_water_consumption",
@@ -125,11 +134,18 @@ async def async_setup_entry(
     # Get poller from hass.data entry created in __init__.async_setup_entry function
     sensors: list[SensorEntity] = []
     for poller in hass.data[DOMAIN].values():
-        sensors.append(VZugDevice(poller, VZUG_DEVICE_DESCRIPTION, timezone))
+        sensors.append(VZugDevice(poller, VZUG_DEVICE_DESCRIPTION))
+        sensors.extend(
+            [VZugSensor(poller, desc, timezone) for desc in COMMON_MACHINE_DESCRIPTIONS]
+        )
 
-        if DEVICE_TYPE_WASHING_MACHINE in poller.device.device_type:
-            for washing_maschine_desc in WASHING_MACHINE_DESCRIPTIONS:
-                sensors.append(VZugSensor(poller, washing_maschine_desc, timezone))
+        if DEVICE_TYPE_WASHING_MACHINE is poller.device.device_type:
+            sensors.extend(
+                [
+                    VZugSensor(poller, desc, timezone)
+                    for desc in WASHING_MACHINE_DESCRIPTIONS
+                ]
+            )
 
     async_add_entities(sensors)
 
@@ -237,15 +253,10 @@ class VZugDevice(VZugSensor):
     # scheduler to trigger the poller.
     should_poll = True
 
-    def __init__(
-        self,
-        poller: VZugPoller,
-        desc: VZugSensorEntryDescription,
-        timezone: tzinfo | None,
-    ) -> None:
+    def __init__(self, poller: VZugPoller, desc: VZugSensorEntryDescription) -> None:
         """Set id and name so that all other sensors can be referenced to this device."""
 
-        super().__init__(poller, desc, timezone)
+        super().__init__(poller, desc, None)
 
         # https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         self.entity_id = self.get_entity_id_prefix()
