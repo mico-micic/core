@@ -27,6 +27,11 @@ from .vzug_poller import VZugPoller
 
 TIME_STR_FORMAT = "%H:%M"
 ICON_PROGRAM = {True: "mdi:washing-machine", False: "mdi:washing-machine-off"}
+ICON_PROGRAM_STATUS = {
+    "idle": "mdi:stop-circle-outline",
+    "active": "mdi:circle-double",
+    "paused": "mdi:pause-circle-outline",
+}
 STATE_TEXT = {True: "active", False: "inactive"}
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,7 +55,7 @@ VZUG_DEVICE_DESCRIPTION = VZugSensorEntryDescription(
 COMMON_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
     VZugSensorEntryDescription(
         key="status",
-        name="Status",
+        name="Device Status",
         icon="mdi:information-outline",
         value_attr="status",
     ),
@@ -108,6 +113,12 @@ WASHING_MACHINE_DESCRIPTIONS: tuple[VZugSensorEntryDescription, ...] = (
         value_attr="program",
     ),
     VZugSensorEntryDescription(
+        key="program_status",
+        name="Program Status",
+        icon_func=lambda sensor: ICON_PROGRAM_STATUS.get(sensor.device.program_status),
+        value_attr="program_status",
+    ),
+    VZugSensorEntryDescription(
         key="program_end",
         name="Program End",
         icon="mdi:calendar-clock",
@@ -150,11 +161,15 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 
-def _to_default_if_empty(value):
-    """Return a predefined string if input is a string type but empty."""
+def _handle_new_line_and_empty_string(value):
+    """Replace new lines and set default value for empty strings."""
     ret = value
-    if isinstance(value, str) and len(value) == 0:
-        ret = "-"
+    if isinstance(value, str):
+        if len(value) == 0:
+            ret = "-"
+        else:
+            ret = value.replace("\n", ", ")
+
     return ret
 
 
@@ -230,7 +245,7 @@ class VZugSensor(SensorEntity):
 
         attr = self._vzug_entity_description.value_attr
         if hasattr(self.device, attr):
-            return _to_default_if_empty(getattr(self.device, attr))
+            return _handle_new_line_and_empty_string(getattr(self.device, attr))
 
         _LOGGER.error(
             "Error reading device attribute! No or invalid value_func / value_attr defined for sensor with key %s",

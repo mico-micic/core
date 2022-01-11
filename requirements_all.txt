@@ -2437,7 +2437,7 @@ vtjp==0.1.14
 vultr==0.1.2
 
 # homeassistant.components.vzug
-vzug-api==0.0.9
+vzug-api==0.0.10
 
 # homeassistant.components.samsungtv
 # homeassistant.components.wake_on_lan
