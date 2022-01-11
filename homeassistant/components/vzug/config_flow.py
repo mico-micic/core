@@ -11,7 +11,7 @@ from homeassistant import config_entries, exceptions
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
-from .const import DEVICE_TYPE_CONF, DOMAIN  # pylint:disable=unused-import
+from .const import DEVICE_TYPE_CONF, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,36 +26,37 @@ DATA_SCHEMA = vol.Schema(
 
 
 async def validate_input(hass: HomeAssistant, data: dict) -> dict[str, Any]:
-    """Validate the user input allows us to connect.
+    """Validate the user input allows us to connect."""
 
-    Data has the keys from DATA_SCHEMA with values provided by the user.
-    """
-
-    if len(data["host"]) < 3:
+    host = data[CONF_HOST]
+    if len(host) < 3:
         raise InvalidHost
 
-    dev = BasicDevice(data["host"])
+    dev = BasicDevice(host)
     result = await dev.load_device_information()
     if not result:
-        raise
+        if dev.error_exception.is_auth_problem:
+            raise InvalidAuth
+        else:
+            raise CannotConnect
 
-    # TODO: Implement InvalidAuth exception handling
-    # If the authentication is wrong:
-    # InvalidAuth
-
-    # It is stored internally in HA as part of the device config.
     return {"title": dev.device_name, DEVICE_TYPE_CONF: dev.device_type}
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Hello World."""
+    """Handle a config flow for V-ZUG integration."""
 
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
+
         errors = {}
         if user_input is not None:
+
+            host = user_input[CONF_HOST]
+            self._async_abort_entries_match({CONF_HOST: host})
+
             try:
                 info = await validate_input(self.hass, user_input)
                 user_input[DEVICE_TYPE_CONF] = info[DEVICE_TYPE_CONF]
@@ -63,8 +64,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidHost:
-                # Set the error on the `host` field, not the entire form.
+                # Set the error on the host field, not the entire form.
                 errors[CONF_HOST] = "cannot_connect"
+            except InvalidAuth:
+                errors[CONF_USERNAME] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
@@ -81,3 +84,7 @@ class CannotConnect(exceptions.HomeAssistantError):
 
 class InvalidHost(exceptions.HomeAssistantError):
     """Error to indicate there is an invalid hostname."""
+
+
+class InvalidAuth(exceptions.HomeAssistantError):
+    """Error to indicate there is an authentication problem."""
