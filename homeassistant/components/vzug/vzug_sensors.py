@@ -1,0 +1,162 @@
+"""V-ZUG sensors implementation module."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import tzinfo
+import logging
+
+from vzug.basic_device import BasicDevice
+
+from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+
+from .const import DOMAIN
+from .vzug_poller import VZugPoller
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class VZugSensorEntryDescription(SensorEntityDescription):
+    """Entry description class for V-ZUG sensors."""
+
+    value_attr: str | None = None
+    value_func: Callable | None = None
+    icon_func: Callable | None = None
+
+
+def _handle_new_line_and_empty_string(value):
+    """Replace new lines and set default value for empty strings."""
+    ret = value
+    if isinstance(value, str):
+        if len(value) == 0:
+            ret = "-"
+        else:
+            ret = value.replace("\n", ", ")
+
+    return ret
+
+
+class VZugSensor(SensorEntity):
+    """Basic class for all V-ZUG device sensors."""
+
+    should_poll = False
+
+    def __init__(
+        self,
+        poller: VZugPoller,
+        description: VZugSensorEntryDescription,
+        timezone: tzinfo | None,
+    ) -> None:
+        """Set entity id and name so that this sensor will be mapped to the corresponding device."""
+
+        self._poller = poller
+        self._timezone = timezone
+
+        self.entity_id = f"{self.get_entity_id_prefix()}.{description.key}"
+        self._attr_unique_id = f"{self.device.uuid}_{description.key}"
+        self._attr_name = f"{self.get_device_name()} {description.name}"
+        self._vzug_entity_description = description
+        self.entity_description = description
+
+    def get_entity_id_prefix(self) -> str:
+        """Return the entity id prefix."""
+        return f"{DOMAIN}.{self.device.device_type}.{self.device.uuid}"
+
+    def get_device_name(self) -> str:
+        """Return the user readable device name."""
+        if len(self.device.device_name) == 0:
+            return self.device.model_desc
+
+        return self.device.device_name
+
+    @property
+    def timezone(self) -> tzinfo | None:
+        """Return current timezone used for date / time values."""
+        return self._timezone
+
+    @property
+    def device(self) -> BasicDevice:
+        """Return the device reference."""
+        return self._poller.device
+
+    @property
+    def available(self) -> bool:
+        """Forward call to VZugPoller::is_online."""
+        return self._poller.is_online
+
+    @property
+    def icon(self) -> str | None:
+        """Return the icon by calling the icon_func if defined."""
+        if self._vzug_entity_description.icon_func is not None:
+            return self._vzug_entity_description.icon_func(self)
+        else:
+            return super().icon
+
+    # To link this entity to the VZug device, this property must return an
+    # identifiers value matching that used in the VZugDevice class
+    @property
+    def device_info(self):
+        """Return information to link this entity with the correct device."""
+        return {"identifiers": {(DOMAIN, self.device.uuid)}}
+
+    @property
+    def native_value(self):
+        """Read device data as defined by the entry description (from value_attr / value_func)."""
+
+        if self._vzug_entity_description.value_func is not None:
+            return self._vzug_entity_description.value_func(self)
+
+        attr = self._vzug_entity_description.value_attr
+        if hasattr(self.device, attr):
+            return _handle_new_line_and_empty_string(getattr(self.device, attr))
+
+        _LOGGER.error(
+            "Error reading device attribute! No or invalid value_func / value_attr defined for sensor with key %s",
+            self.entity_description.key,
+        )
+
+    async def async_added_to_hass(self):
+        """Register callback to get notfied when the device data was updated."""
+        self._poller.register_callback(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self):
+        """Don't forget to remove the callback."""
+        self._poller.remove_callback(self.async_write_ha_state)
+
+
+class VZugDevice(VZugSensor):
+    """Representation of a V-ZUG device."""
+
+    # Enable polling only for the device class. In this way we use the hass
+    # scheduler to trigger the poller.
+    should_poll = True
+
+    def __init__(self, poller: VZugPoller, desc: VZugSensorEntryDescription) -> None:
+        """Set id and name so that all other sensors can be referenced to this device."""
+
+        super().__init__(poller, desc, None)
+
+        # https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
+        self.entity_id = self.get_entity_id_prefix()
+        self._attr_name = self.get_device_name()
+
+    # Information about the devices that is sible in the UI.
+    # https://developers.home-assistant.io/docs/device_registry_index/#device-properties
+    @property
+    def device_info(self):
+        """Information about this entity/device."""
+        return {
+            "identifiers": {(DOMAIN, self.device.uuid)},
+            "name": self.get_device_name(),
+            "sw_version": "",
+            "model": self.device.model_desc,
+            "manufacturer": "V-ZUG",
+            "configuration_url": f"http://{self._poller.hostname}",
+            "hw_version": self.device.serial,
+        }
+
+    async def async_update(self):
+        """Poll for device data."""
+        await self._poller.async_poll()
