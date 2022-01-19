@@ -2,7 +2,13 @@
 
 from typing import Callable, Set
 
-from vzug import DEVICE_TYPE_WASHING_MACHINE, BasicDevice, WashingMachine
+from vzug import (
+    DEVICE_TYPE_DRYER,
+    DEVICE_TYPE_WASHING_MACHINE,
+    BasicDevice,
+    Dryer,
+    WashingMachine,
+)
 
 
 class VZugPoller:
@@ -22,6 +28,8 @@ class VZugPoller:
 
         if DEVICE_TYPE_WASHING_MACHINE in dev_type:
             self._device = WashingMachine(hostname, username, password)
+        elif DEVICE_TYPE_DRYER in dev_type:
+            self._device = Dryer(hostname, username, password)
         else:
             self._device = BasicDevice(hostname, username, password)
 
