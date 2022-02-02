@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from vzug import DEVICE_TYPE_DRYER, DEVICE_TYPE_WASHING_MACHINE
+from vzug import DEVICE_TYPE_DRYER, DEVICE_TYPE_UNKNOWN, DEVICE_TYPE_WASHING_MACHINE
 
 from homeassistant.components.sensor import (
     STATE_CLASS_MEASUREMENT,
@@ -23,11 +23,16 @@ from .vzug_sensors import VZugDevice, VZugSensor, VZugSensorEntryDescription
 _LOGGER = logging.getLogger(__name__)
 
 TIME_STR_FORMAT = "%H:%M"
-ICON_PROGRAM = {True: "mdi:washing-machine", False: "mdi:washing-machine-off"}
+ICON_PROGRAM = {True: "mdi:cog-play-outline", False: "mdi:cog-off-outline"}
 ICON_PROGRAM_STATUS = {
     "idle": "mdi:stop-circle-outline",
-    "active": "mdi:circle-double",
+    "active": "mdi:play-circle-outline",
     "paused": "mdi:pause-circle-outline",
+}
+ICON_DEVICE_TYPE = {
+    DEVICE_TYPE_WASHING_MACHINE: "mdi:washing-machine",
+    DEVICE_TYPE_DRYER: "mdi:tumble-dryer",
+    DEVICE_TYPE_UNKNOWN: "mdi:help-box",
 }
 STATE_TEXT = {True: "active", False: "inactive"}
 
@@ -35,7 +40,7 @@ STATE_TEXT = {True: "active", False: "inactive"}
 # Description for the entire device that will appear in the "Devices" section of HASS.
 VZUG_DEVICE_DESCRIPTION = VZugSensorEntryDescription(
     key="machine",
-    icon="mdi:washing-machine",
+    icon_func=lambda sensor: ICON_DEVICE_TYPE.get(sensor.device.device_type),
     value_func=lambda sensor: STATE_TEXT.get(sensor.device.is_active),
 )
 
