@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import DEVICE_TYPE_CONF, DOMAIN
 from .vzug_poller import VZugPoller
@@ -24,6 +25,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Run first poll
     await vzug_updater.async_poll()
+
+    if not vzug_updater.is_online:
+        raise ConfigEntryNotReady
 
     # Store an instance of the poller so that it can be used by the sensors
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = vzug_updater
