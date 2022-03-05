@@ -37,8 +37,8 @@ async def validate_input(hass: HomeAssistant, data: dict) -> dict[str, Any]:
     if not result:
         if dev.error_exception.is_auth_problem:
             raise InvalidAuth
-        else:
-            raise CannotConnect
+
+        raise CannotConnect
 
     return {"title": dev.device_name, DEVICE_TYPE_CONF: dev.device_type}
 
@@ -67,7 +67,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Set the error on the host field, not the entire form.
                 errors[CONF_HOST] = "cannot_connect"
             except InvalidAuth:
-                errors[CONF_USERNAME] = "invalid_auth"
+                errors["base"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"

@@ -1,89 +1,111 @@
 """Test the V-ZUG config flow."""
+
 from unittest.mock import patch
 
+from vzug import DEVICE_TYPE_WASHING_MACHINE
+
 from homeassistant import config_entries
-from homeassistant.components.vzug.config_flow import CannotConnect, InvalidAuth
 from homeassistant.components.vzug.const import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import RESULT_TYPE_CREATE_ENTRY, RESULT_TYPE_FORM
 
+from .device_mocks import (
+    MockDeviceAuthProblem,
+    MockDeviceConnectionProblem,
+    MockWashingMachine,
+)
+
+DEVICE_MOCK_PATH = "homeassistant.components.vzug.config_flow.BasicDevice"
+
+DEFAULT_USER_INPUT = {
+    "host": "1.1.1.1",
+    "username": "test-username",
+    "password": "test-password",
+}
+
 
 async def test_form(hass: HomeAssistant) -> None:
     """Test we get the form."""
-    result = await hass.config_entries.flow.async_init(
+
+    init_result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == RESULT_TYPE_FORM
-    assert result["errors"] is None
 
-    with patch(
-        "homeassistant.components.vzug.config_flow.PlaceholderHub.authenticate",
-        return_value=True,
-    ), patch(
-        "homeassistant.components.vzug.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
+    assert init_result["type"] == RESULT_TYPE_FORM
+    assert bool(init_result["errors"]) is False
+
+    with patch(DEVICE_MOCK_PATH, return_value=MockWashingMachine()) as mock_setup_entry:
+        result = await hass.config_entries.flow.async_configure(
+            init_result["flow_id"], DEFAULT_USER_INPUT
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == RESULT_TYPE_CREATE_ENTRY
-    assert result2["title"] == "Name of the device"
-    assert result2["data"] == {
+    assert len(mock_setup_entry.mock_calls) == 1
+    assert result["type"] == RESULT_TYPE_CREATE_ENTRY
+    assert result["title"] == "MockDevice Name"
+    assert result["data"] == {
         "host": "1.1.1.1",
         "username": "test-username",
         "password": "test-password",
+        "vzug.device_type": DEVICE_TYPE_WASHING_MACHINE,
     }
-    assert len(mock_setup_entry.mock_calls) == 1
 
 
 async def test_form_invalid_auth(hass: HomeAssistant) -> None:
     """Test we handle invalid auth."""
-    result = await hass.config_entries.flow.async_init(
+
+    init_result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
     with patch(
-        "homeassistant.components.vzug.config_flow.PlaceholderHub.authenticate",
-        side_effect=InvalidAuth,
+        DEVICE_MOCK_PATH,
+        return_value=MockDeviceAuthProblem(),
     ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
+        result = await hass.config_entries.flow.async_configure(
+            init_result["flow_id"],
+            DEFAULT_USER_INPUT,
         )
 
-    assert result2["type"] == RESULT_TYPE_FORM
-    assert result2["errors"] == {"base": "invalid_auth"}
+    assert result["type"] == RESULT_TYPE_FORM
+    assert result["errors"] == {"base": "invalid_auth"}
 
 
 async def test_form_cannot_connect(hass: HomeAssistant) -> None:
     """Test we handle cannot connect error."""
-    result = await hass.config_entries.flow.async_init(
+
+    init_result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
     with patch(
-        "homeassistant.components.vzug.config_flow.PlaceholderHub.authenticate",
-        side_effect=CannotConnect,
+        DEVICE_MOCK_PATH,
+        return_value=MockDeviceConnectionProblem(),
     ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
+        result = await hass.config_entries.flow.async_configure(
+            init_result["flow_id"],
+            DEFAULT_USER_INPUT,
         )
 
-    assert result2["type"] == RESULT_TYPE_FORM
-    assert result2["errors"] == {"base": "cannot_connect"}
+    assert result["type"] == RESULT_TYPE_FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_form_invalid_host(hass: HomeAssistant) -> None:
+    """Test we handle invalid host error."""
+
+    init_result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with patch(
+        DEVICE_MOCK_PATH,
+        return_value=MockDeviceConnectionProblem(),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            init_result["flow_id"],
+            {"host": "e"},
+        )
+
+    assert result["type"] == RESULT_TYPE_FORM
+    assert result["errors"] == {"host": "cannot_connect"}
