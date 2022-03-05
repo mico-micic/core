@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from aiohttp.client_exceptions import ClientConnectionError
 import async_timeout
-from pysensibo import SensiboError
+from pysensibo.exceptions import AuthenticationError, SensiboError
 import voluptuous as vol
 
 from homeassistant.components.climate import (
@@ -26,17 +25,18 @@ from homeassistant.components.climate.const import (
 )
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import (
-    ATTR_ENTITY_ID,
     ATTR_STATE,
     ATTR_TEMPERATURE,
     CONF_API_KEY,
     CONF_ID,
+    PRECISION_TENTHS,
     TEMP_CELSIUS,
     TEMP_FAHRENHEIT,
 )
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_platform
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -55,10 +55,6 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
     }
 )
 
-ASSUME_STATE_SCHEMA = vol.Schema(
-    {vol.Optional(ATTR_ENTITY_ID): cv.entity_ids, vol.Required(ATTR_STATE): cv.string}
-)
-
 FIELD_TO_FLAG = {
     "fanLevel": SUPPORT_FAN_MODE,
     "swing": SUPPORT_SWING_MODE,
@@ -75,6 +71,14 @@ SENSIBO_TO_HA = {
 }
 
 HA_TO_SENSIBO = {value: key for key, value in SENSIBO_TO_HA.items()}
+
+AC_STATE_TO_DATA = {
+    "targetTemperature": "target_temp",
+    "fanLevel": "fan_mode",
+    "on": "on",
+    "mode": "hvac_mode",
+    "swing": "swing_mode",
+}
 
 
 async def async_setup_platform(
@@ -104,7 +108,7 @@ async def async_setup_entry(
     coordinator: SensiboDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
-        SensiboClimate(coordinator, device_id, hass.config.units.temperature_unit)
+        SensiboClimate(coordinator, device_id)
         for device_id, device_data in coordinator.data.items()
         # Remove none climate devices
         if device_data["hvac_modes"] and device_data["temp"]
@@ -112,28 +116,13 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
-    async def async_assume_state(service: ServiceCall) -> None:
-        """Set state according to external service call.."""
-        if entity_ids := service.data.get(ATTR_ENTITY_ID):
-            target_climate = [
-                entity for entity in entities if entity.entity_id in entity_ids
-            ]
-        else:
-            target_climate = entities
-
-        update_tasks = []
-        for climate in target_climate:
-            await climate.async_assume_state(service.data.get(ATTR_STATE))
-            update_tasks.append(climate.async_update_ha_state(True))
-
-        if update_tasks:
-            await asyncio.wait(update_tasks)
-
-    hass.services.async_register(
-        DOMAIN,
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
         SERVICE_ASSUME_STATE,
-        async_assume_state,
-        schema=ASSUME_STATE_SCHEMA,
+        {
+            vol.Required(ATTR_STATE): vol.In(["on", "off"]),
+        },
+        "async_assume_state",
     )
 
 
@@ -143,10 +132,7 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
     coordinator: SensiboDataUpdateCoordinator
 
     def __init__(
-        self,
-        coordinator: SensiboDataUpdateCoordinator,
-        device_id: str,
-        temp_unit: str,
+        self, coordinator: SensiboDataUpdateCoordinator, device_id: str
     ) -> None:
         """Initiate SensiboClimate."""
         super().__init__(coordinator)
@@ -159,9 +145,11 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
             else TEMP_FAHRENHEIT
         )
         self._attr_supported_features = self.get_features()
+        self._attr_precision = PRECISION_TENTHS
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, coordinator.data[device_id]["id"])},
             name=coordinator.data[device_id]["name"],
+            connections={(CONNECTION_NETWORK_MAC, coordinator.data[device_id]["mac"])},
             manufacturer="Sensibo",
             configuration_url="https://home.sensibo.com/",
             model=coordinator.data[device_id]["model"],
@@ -173,7 +161,7 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
     def get_features(self) -> int:
         """Get supported features."""
         features = 0
-        for key in self.coordinator.data[self.unique_id]["features"]:
+        for key in self.coordinator.data[self.unique_id]["full_features"]:
             if key in FIELD_TO_FLAG:
                 features |= FIELD_TO_FLAG[key]
         return features
@@ -256,6 +244,14 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
 
     async def async_set_temperature(self, **kwargs) -> None:
         """Set new target temperature."""
+        if (
+            "targetTemperature"
+            not in self.coordinator.data[self.unique_id]["active_features"]
+        ):
+            raise HomeAssistantError(
+                "Current mode doesn't support setting Target Temperature"
+            )
+
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
 
@@ -273,68 +269,45 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
             else:
                 return
 
-        result = await self._async_set_ac_state_property(
-            "targetTemperature", int(temperature)
-        )
-        if result:
-            self.coordinator.data[self.unique_id]["target_temp"] = int(temperature)
-            self.async_write_ha_state()
+        await self._async_set_ac_state_property("targetTemperature", int(temperature))
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new target fan mode."""
-        result = await self._async_set_ac_state_property("fanLevel", fan_mode)
-        if result:
-            self.coordinator.data[self.unique_id]["fan_mode"] = fan_mode
-            self.async_write_ha_state()
+        if "fanLevel" not in self.coordinator.data[self.unique_id]["active_features"]:
+            raise HomeAssistantError("Current mode doesn't support setting Fanlevel")
+
+        await self._async_set_ac_state_property("fanLevel", fan_mode)
 
     async def async_set_hvac_mode(self, hvac_mode: str) -> None:
         """Set new target operation mode."""
         if hvac_mode == HVAC_MODE_OFF:
-            result = await self._async_set_ac_state_property("on", False)
-            if result:
-                self.coordinator.data[self.unique_id]["on"] = False
-                self.async_write_ha_state()
+            await self._async_set_ac_state_property("on", False)
             return
 
         # Turn on if not currently on.
         if not self.coordinator.data[self.unique_id]["on"]:
-            result = await self._async_set_ac_state_property("on", True)
-            if result:
-                self.coordinator.data[self.unique_id]["on"] = True
+            await self._async_set_ac_state_property("on", True)
 
-        result = await self._async_set_ac_state_property(
-            "mode", HA_TO_SENSIBO[hvac_mode]
-        )
-        if result:
-            self.coordinator.data[self.unique_id]["hvac_mode"] = HA_TO_SENSIBO[
-                hvac_mode
-            ]
-            self.async_write_ha_state()
+        await self._async_set_ac_state_property("mode", HA_TO_SENSIBO[hvac_mode])
 
     async def async_set_swing_mode(self, swing_mode: str) -> None:
         """Set new target swing operation."""
-        result = await self._async_set_ac_state_property("swing", swing_mode)
-        if result:
-            self.coordinator.data[self.unique_id]["swing_mode"] = swing_mode
-            self.async_write_ha_state()
+        if "swing" not in self.coordinator.data[self.unique_id]["active_features"]:
+            raise HomeAssistantError("Current mode doesn't support setting Swing")
+
+        await self._async_set_ac_state_property("swing", swing_mode)
 
     async def async_turn_on(self) -> None:
         """Turn Sensibo unit on."""
-        result = await self._async_set_ac_state_property("on", True)
-        if result:
-            self.coordinator.data[self.unique_id]["on"] = True
-            self.async_write_ha_state()
+        await self._async_set_ac_state_property("on", True)
 
     async def async_turn_off(self) -> None:
         """Turn Sensibo unit on."""
-        result = await self._async_set_ac_state_property("on", False)
-        if result:
-            self.coordinator.data[self.unique_id]["on"] = False
-            self.async_write_ha_state()
+        await self._async_set_ac_state_property("on", False)
 
     async def _async_set_ac_state_property(
-        self, name: str, value: Any, assumed_state: bool = False
-    ) -> bool:
+        self, name: str, value: str | int | bool, assumed_state: bool = False
+    ) -> None:
         """Set AC state."""
         result = {}
         try:
@@ -349,22 +322,24 @@ class SensiboClimate(CoordinatorEntity, ClimateEntity):
         except (
             ClientConnectionError,
             asyncio.TimeoutError,
+            AuthenticationError,
             SensiboError,
         ) as err:
             raise HomeAssistantError(
                 f"Failed to set AC state for device {self.name} to Sensibo servers: {err}"
             ) from err
         LOGGER.debug("Result: %s", result)
-        if result["status"] == "Success":
-            return True
-        failure = result["failureReason"]
+        if result["result"]["status"] == "Success":
+            self.coordinator.data[self.unique_id][AC_STATE_TO_DATA[name]] = value
+            self.async_write_ha_state()
+            return
+
+        failure = result["result"]["failureReason"]
         raise HomeAssistantError(
             f"Could not set state for device {self.name} due to reason {failure}"
         )
 
     async def async_assume_state(self, state) -> None:
         """Sync state with api."""
-        if state == self.state or (state == "on" and self.state != HVAC_MODE_OFF):
-            return
         await self._async_set_ac_state_property("on", state != HVAC_MODE_OFF, True)
         await self.coordinator.async_refresh()
