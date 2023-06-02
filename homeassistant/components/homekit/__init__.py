@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from copy import deepcopy
 import ipaddress
 import logging
 import os
+from typing import Any, cast
 
 from aiohttp import web
+from pyhap.characteristic import Characteristic
 from pyhap.const import STANDALONE_AID
+from pyhap.loader import get_loader
+from pyhap.service import Service
 import voluptuous as vol
+from zeroconf.asyncio import AsyncZeroconf
 
 from homeassistant.components import device_automation, network, zeroconf
 from homeassistant.components.binary_sensor import (
@@ -17,9 +23,12 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 from homeassistant.components.camera import DOMAIN as CAMERA_DOMAIN
+from homeassistant.components.device_automation.trigger import (
+    async_validate_trigger_config,
+)
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.components.humidifier import DOMAIN as HUMIDIFIER_DOMAIN
-from homeassistant.components.network.const import MDNS_TARGET_IP
+from homeassistant.components.network import MDNS_TARGET_IP
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN, SensorDeviceClass
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import (
@@ -39,17 +48,24 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     SERVICE_RELOAD,
 )
-from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
+from homeassistant.core import CoreState, HomeAssistant, ServiceCall, State, callback
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
-from homeassistant.helpers import device_registry, entity_registry
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+    instance_id,
+)
 from homeassistant.helpers.entityfilter import (
     BASE_FILTER_SCHEMA,
     FILTER_SCHEMA,
     EntityFilter,
 )
 from homeassistant.helpers.reload import async_integration_yaml_config
-from homeassistant.helpers.service import async_extract_referenced_entity_ids
+from homeassistant.helpers.service import (
+    async_extract_referenced_entity_ids,
+    async_register_admin_service,
+)
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import IntegrationNotFound, async_get_integration
 
@@ -67,7 +83,7 @@ from . import (  # noqa: F401
     type_switches,
     type_thermostats,
 )
-from .accessories import HomeBridge, HomeDriver, get_accessory
+from .accessories import HomeAccessory, HomeBridge, HomeDriver, get_accessory
 from .aidmanager import AccessoryAidStorage
 from .const import (
     ATTR_INTEGRATION,
@@ -100,6 +116,7 @@ from .const import (
     SERVICE_HOMEKIT_UNPAIR,
     SHUTDOWN_TIMEOUT,
 )
+from .iidmanager import AccessoryIIDStorage
 from .type_triggers import DeviceTriggerAccessory
 from .util import (
     accessory_friendly_name,
@@ -114,7 +131,7 @@ from .util import (
 
 _LOGGER = logging.getLogger(__name__)
 
-MAX_DEVICES = 150
+MAX_DEVICES = 150  # includes the bridge
 
 # #### Driver Status ####
 STATUS_READY = 0
@@ -125,11 +142,13 @@ STATUS_WAIT = 3
 PORT_CLEANUP_CHECK_INTERVAL_SECS = 1
 
 _HOMEKIT_CONFIG_UPDATE_TIME = (
-    5  # number of seconds to wait for homekit to see the c# change
+    10  # number of seconds to wait for homekit to see the c# change
 )
 
 
-def _has_all_unique_names_and_ports(bridges):
+def _has_all_unique_names_and_ports(
+    bridges: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Validate that each homekit bridge configured has a unique name."""
     names = [bridge[CONF_NAME] for bridge in bridges]
     ports = [bridge[CONF_PORT] for bridge in bridges]
@@ -184,17 +203,31 @@ def _async_all_homekit_instances(hass: HomeAssistant) -> list[HomeKit]:
     ]
 
 
-def _async_get_entries_by_name(current_entries):
-    """Return a dict of the entries by name."""
+def _async_get_imported_entries_indices(
+    current_entries: list[ConfigEntry],
+) -> tuple[dict[str, ConfigEntry], dict[int, ConfigEntry]]:
+    """Return a dicts of the entries by name and port."""
 
     # For backwards compat, its possible the first bridge is using the default
     # name.
-    return {entry.data.get(CONF_NAME, BRIDGE_NAME): entry for entry in current_entries}
+    entries_by_name: dict[str, ConfigEntry] = {}
+    entries_by_port: dict[int, ConfigEntry] = {}
+    for entry in current_entries:
+        if entry.source != SOURCE_IMPORT:
+            continue
+        entries_by_name[entry.data.get(CONF_NAME, BRIDGE_NAME)] = entry
+        entries_by_port[entry.data.get(CONF_PORT, DEFAULT_PORT)] = entry
+    return entries_by_name, entries_by_port
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the HomeKit from yaml."""
     hass.data.setdefault(DOMAIN, {})[PERSIST_LOCK] = asyncio.Lock()
+
+    # Initialize the loader before loading entries to ensure
+    # there is no race where multiple entries try to load it
+    # at the same time.
+    await hass.async_add_executor_job(get_loader)
 
     _async_register_events_and_services(hass)
 
@@ -202,10 +235,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         return True
 
     current_entries = hass.config_entries.async_entries(DOMAIN)
-    entries_by_name = _async_get_entries_by_name(current_entries)
+    entries_by_name, entries_by_port = _async_get_imported_entries_indices(
+        current_entries
+    )
 
     for index, conf in enumerate(config[DOMAIN]):
-        if _async_update_config_entry_if_from_yaml(hass, entries_by_name, conf):
+        if _async_update_config_entry_from_yaml(
+            hass, entries_by_name, entries_by_port, conf
+        ):
             continue
 
         conf[CONF_ENTRY_INDEX] = index
@@ -221,34 +258,36 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 @callback
-def _async_update_config_entry_if_from_yaml(hass, entries_by_name, conf):
+def _async_update_config_entry_from_yaml(
+    hass: HomeAssistant,
+    entries_by_name: dict[str, ConfigEntry],
+    entries_by_port: dict[int, ConfigEntry],
+    conf: ConfigType,
+) -> bool:
     """Update a config entry with the latest yaml.
 
     Returns True if a matching config entry was found
 
     Returns False if there is no matching config entry
     """
-    bridge_name = conf[CONF_NAME]
-
-    if (
-        bridge_name in entries_by_name
-        and entries_by_name[bridge_name].source == SOURCE_IMPORT
+    if not (
+        matching_entry := entries_by_name.get(conf.get(CONF_NAME, BRIDGE_NAME))
+        or entries_by_port.get(conf.get(CONF_PORT, DEFAULT_PORT))
     ):
-        entry = entries_by_name[bridge_name]
-        # If they alter the yaml config we import the changes
-        # since there currently is no practical way to support
-        # all the options in the UI at this time.
-        data = conf.copy()
-        options = {}
-        for key in CONFIG_OPTIONS:
-            if key in data:
-                options[key] = data[key]
-                del data[key]
+        return False
 
-        hass.config_entries.async_update_entry(entry, data=data, options=options)
-        return True
+    # If they alter the yaml config we import the changes
+    # since there currently is no practical way to support
+    # all the options in the UI at this time.
+    data = conf.copy()
+    options = {}
+    for key in CONFIG_OPTIONS:
+        if key in data:
+            options[key] = data[key]
+            del data[key]
 
-    return False
+    hass.config_entries.async_update_entry(matching_entry, data=data, options=options)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -263,10 +302,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Begin setup HomeKit for %s", name)
 
     # ip_address and advertise_ip are yaml only
-    ip_address = conf.get(
-        CONF_IP_ADDRESS, await network.async_get_source_ip(hass, MDNS_TARGET_IP)
+    ip_address = conf.get(CONF_IP_ADDRESS, [None])
+    advertise_ip = conf.get(
+        CONF_ADVERTISE_IP, await network.async_get_source_ip(hass, MDNS_TARGET_IP)
     )
-    advertise_ip = conf.get(CONF_ADVERTISE_IP)
     # exclude_accessory_mode is only used for config flow
     # to indicate that the config entry was setup after
     # we started creating config entries for entities that
@@ -346,13 +385,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove a config entry."""
-    return await hass.async_add_executor_job(
+    await hass.async_add_executor_job(
         remove_state_files_for_entry_id, hass, entry.entry_id
     )
 
 
 @callback
-def _async_import_options_from_data_if_missing(hass: HomeAssistant, entry: ConfigEntry):
+def _async_import_options_from_data_if_missing(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
     options = deepcopy(dict(entry.options))
     data = deepcopy(dict(entry.data))
     modified = False
@@ -367,7 +408,7 @@ def _async_import_options_from_data_if_missing(hass: HomeAssistant, entry: Confi
 
 
 @callback
-def _async_register_events_and_services(hass: HomeAssistant):
+def _async_register_events_and_services(hass: HomeAssistant) -> None:
     """Register events and services for HomeKit."""
     hass.http.register_view(HomeKitPairingQRView)
 
@@ -381,7 +422,7 @@ def _async_register_events_and_services(hass: HomeAssistant):
                 )
                 continue
 
-            entity_ids = service.data.get("entity_id")
+            entity_ids = cast(list[str], service.data.get("entity_id"))
             await homekit.async_reset_accessories(entity_ids)
 
     hass.services.async_register(
@@ -394,20 +435,19 @@ def _async_register_events_and_services(hass: HomeAssistant):
     async def async_handle_homekit_unpair(service: ServiceCall) -> None:
         """Handle unpair HomeKit service call."""
         referenced = async_extract_referenced_entity_ids(hass, service)
-        dev_reg = device_registry.async_get(hass)
+        dev_reg = dr.async_get(hass)
         for device_id in referenced.referenced_devices:
             if not (dev_reg_ent := dev_reg.async_get(device_id)):
                 raise HomeAssistantError(f"No device found for device id: {device_id}")
             macs = [
                 cval
                 for ctype, cval in dev_reg_ent.connections
-                if ctype == device_registry.CONNECTION_NETWORK_MAC
+                if ctype == dr.CONNECTION_NETWORK_MAC
             ]
             matching_instances = [
                 homekit
                 for homekit in _async_all_homekit_instances(hass)
-                if homekit.driver
-                and device_registry.format_mac(homekit.driver.state.mac) in macs
+                if homekit.driver and dr.format_mac(homekit.driver.state.mac) in macs
             ]
             if not matching_instances:
                 raise HomeAssistantError(
@@ -431,10 +471,14 @@ def _async_register_events_and_services(hass: HomeAssistant):
             return
 
         current_entries = hass.config_entries.async_entries(DOMAIN)
-        entries_by_name = _async_get_entries_by_name(current_entries)
+        entries_by_name, entries_by_port = _async_get_imported_entries_indices(
+            current_entries
+        )
 
         for conf in config[DOMAIN]:
-            _async_update_config_entry_if_from_yaml(hass, entries_by_name, conf)
+            _async_update_config_entry_from_yaml(
+                hass, entries_by_name, entries_by_port, conf
+            )
 
         reload_tasks = [
             hass.config_entries.async_reload(entry.entry_id)
@@ -443,7 +487,8 @@ def _async_register_events_and_services(hass: HomeAssistant):
 
         await asyncio.gather(*reload_tasks)
 
-    hass.helpers.service.async_register_admin_service(
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_RELOAD,
         _handle_homekit_reload,
@@ -455,25 +500,25 @@ class HomeKit:
 
     def __init__(
         self,
-        hass,
-        name,
-        port,
-        ip_address,
-        entity_filter,
-        exclude_accessory_mode,
-        entity_config,
-        homekit_mode,
-        advertise_ip=None,
-        entry_id=None,
-        entry_title=None,
-        devices=None,
-    ):
+        hass: HomeAssistant,
+        name: str,
+        port: int,
+        ip_address: str | None,
+        entity_filter: EntityFilter,
+        exclude_accessory_mode: bool,
+        entity_config: dict,
+        homekit_mode: str,
+        advertise_ip: str | None,
+        entry_id: str,
+        entry_title: str,
+        devices: list[str] | None = None,
+    ) -> None:
         """Initialize a HomeKit object."""
         self.hass = hass
         self._name = name
         self._port = port
         self._ip_address = ip_address
-        self._filter: EntityFilter = entity_filter
+        self._filter = entity_filter
         self._config = entity_config
         self._exclude_accessory_mode = exclude_accessory_mode
         self._advertise_ip = advertise_ip
@@ -481,14 +526,16 @@ class HomeKit:
         self._entry_title = entry_title
         self._homekit_mode = homekit_mode
         self._devices = devices or []
-        self.aid_storage = None
+        self.aid_storage: AccessoryAidStorage | None = None
+        self.iid_storage: AccessoryIIDStorage | None = None
         self.status = STATUS_READY
+        self.driver: HomeDriver | None = None
+        self.bridge: HomeBridge | None = None
+        self._reset_lock = asyncio.Lock()
 
-        self.bridge = None
-        self.driver = None
-
-    def setup(self, async_zeroconf_instance, uuid):
+    def setup(self, async_zeroconf_instance: AsyncZeroconf, uuid: str) -> None:
         """Set up bridge and accessory driver."""
+        assert self.iid_storage is not None
         persist_file = get_persist_fullpath_for_entry_id(self.hass, self._entry_id)
 
         self.driver = HomeDriver(
@@ -503,6 +550,8 @@ class HomeKit:
             advertised_address=self._advertise_ip,
             async_zeroconf_instance=async_zeroconf_instance,
             zeroconf_server=f"{uuid}-hap.local.",
+            loader=get_loader(),
+            iid_storage=self.iid_storage,
         )
 
         # If we do not load the mac address will be wrong
@@ -510,32 +559,59 @@ class HomeKit:
         if os.path.exists(persist_file):
             self.driver.load()
 
-    async def async_reset_accessories(self, entity_ids):
+    async def async_reset_accessories(self, entity_ids: Iterable[str]) -> None:
         """Reset the accessory to load the latest configuration."""
-        if not self.bridge:
-            await self.async_reset_accessories_in_accessory_mode(entity_ids)
-            return
-        await self.async_reset_accessories_in_bridge_mode(entity_ids)
+        async with self._reset_lock:
+            if not self.bridge:
+                await self.async_reset_accessories_in_accessory_mode(entity_ids)
+                return
+            await self.async_reset_accessories_in_bridge_mode(entity_ids)
 
-    async def async_reset_accessories_in_accessory_mode(self, entity_ids):
+    async def _async_shutdown_accessory(self, accessory: HomeAccessory) -> None:
+        """Shutdown an accessory."""
+        assert self.driver is not None
+        await accessory.stop()
+        # Deallocate the IIDs for the accessory
+        iid_manager = accessory.iid_manager
+        services: list[Service] = accessory.services
+        for service in services:
+            iid_manager.remove_obj(service)
+            characteristics: list[Characteristic] = service.characteristics
+            for char in characteristics:
+                iid_manager.remove_obj(char)
+
+    async def async_reset_accessories_in_accessory_mode(
+        self, entity_ids: Iterable[str]
+    ) -> None:
         """Reset accessories in accessory mode."""
-        acc = self.driver.accessory
+        assert self.driver is not None
+
+        acc = cast(HomeAccessory, self.driver.accessory)
         if acc.entity_id not in entity_ids:
             return
-        await acc.stop()
         if not (state := self.hass.states.get(acc.entity_id)):
             _LOGGER.warning(
-                "The underlying entity %s disappeared during reset", acc.entity
+                "The underlying entity %s disappeared during reset", acc.entity_id
             )
             return
+        await self._async_shutdown_accessory(acc)
         if new_acc := self._async_create_single_accessory([state]):
             self.driver.accessory = new_acc
-            self.hass.async_add_job(new_acc.run)
+            self.hass.async_create_task(
+                new_acc.run(), f"HomeKit Bridge Accessory: {new_acc.entity_id}"
+            )
             await self.async_config_changed()
 
-    async def async_reset_accessories_in_bridge_mode(self, entity_ids):
+    async def async_reset_accessories_in_bridge_mode(
+        self, entity_ids: Iterable[str]
+    ) -> None:
         """Reset accessories in bridge mode."""
+        assert self.aid_storage is not None
+        assert self.bridge is not None
+        assert self.driver is not None
+
         new = []
+        acc: HomeAccessory | None
         for entity_id in entity_ids:
             aid = self.aid_storage.get_or_allocate_aid_for_entity_id(entity_id)
             if aid not in self.bridge.accessories:
@@ -546,11 +622,13 @@ class HomeKit:
                 entity_id,
             )
             acc = await self.async_remove_bridge_accessory(aid)
-            if state := self.hass.states.get(acc.entity_id):
+            if acc:
+                await self._async_shutdown_accessory(acc)
+            if acc and (state := self.hass.states.get(acc.entity_id)):
                 new.append(state)
             else:
                 _LOGGER.warning(
-                    "The underlying entity %s disappeared during reset", acc.entity
+                    "The underlying entity %s disappeared during reset", entity_id
                 )
 
         if not new:
@@ -560,32 +638,40 @@ class HomeKit:
         await self.async_config_changed()
         await asyncio.sleep(_HOMEKIT_CONFIG_UPDATE_TIME)
         for state in new:
-            acc = self.add_bridge_accessory(state)
-            if acc:
-                self.hass.async_add_job(acc.run)
+            if acc := self.add_bridge_accessory(state):
+                self.hass.async_create_task(
+                    acc.run(), f"HomeKit Bridge Accessory: {acc.entity_id}"
+                )
         await self.async_config_changed()
 
-    async def async_config_changed(self):
+    async def async_config_changed(self) -> None:
         """Call config changed which writes out the new config to disk."""
+        assert self.driver is not None
         await self.hass.async_add_executor_job(self.driver.config_changed)
 
-    def add_bridge_accessory(self, state):
+    def add_bridge_accessory(self, state: State) -> HomeAccessory | None:
         """Try adding accessory to bridge if configured beforehand."""
+        assert self.driver is not None
+
         if self._would_exceed_max_devices(state.entity_id):
-            return
+            return None
 
         if state_needs_accessory_mode(state):
             if self._exclude_accessory_mode:
-                return
+                return None
             _LOGGER.warning(
-                "The bridge %s has entity %s. For best performance, "
-                "and to prevent unexpected unavailability, create and "
-                "pair a separate HomeKit instance in accessory mode for "
-                "this entity",
+                (
+                    "The bridge %s has entity %s. For best performance, "
+                    "and to prevent unexpected unavailability, create and "
+                    "pair a separate HomeKit instance in accessory mode for "
+                    "this entity"
+                ),
                 self._name,
                 state.entity_id,
             )
 
+        assert self.aid_storage is not None
+        assert self.bridge is not None
         aid = self.aid_storage.get_or_allocate_aid_for_entity_id(state.entity_id)
         conf = self._config.get(state.entity_id, {}).copy()
         # If an accessory cannot be created or added due to an exception
@@ -602,28 +688,36 @@ class HomeKit:
             )
         return None
 
-    def _would_exceed_max_devices(self, name):
+    def _would_exceed_max_devices(self, name: str | None) -> bool:
         """Check if adding another devices would reach the limit and log."""
         # The bridge itself counts as an accessory
+        assert self.bridge is not None
         if len(self.bridge.accessories) + 1 >= MAX_DEVICES:
             _LOGGER.warning(
-                "Cannot add %s as this would exceed the %d device limit. Consider using the filter option",
+                (
+                    "Cannot add %s as this would exceed the %d device limit. Consider"
+                    " using the filter option"
+                ),
                 name,
                 MAX_DEVICES,
             )
             return True
         return False
 
-    def add_bridge_triggers_accessory(self, device, device_triggers):
+    def add_bridge_triggers_accessory(
+        self, device: dr.DeviceEntry, device_triggers: list[dict[str, Any]]
+    ) -> None:
         """Add device automation triggers to the bridge."""
         if self._would_exceed_max_devices(device.name):
             return
 
+        assert self.aid_storage is not None
+        assert self.bridge is not None
         aid = self.aid_storage.get_or_allocate_aid(device.id, device.id)
         # If an accessory cannot be created or added due to an exception
         # of any kind (usually in pyhap) it should not prevent
         # the rest of the accessories from being created
-        config = {}
+        config: dict[str, Any] = {}
         self._fill_config_from_device_registry_entry(device, config)
         self.bridge.add_accessory(
             DeviceTriggerAccessory(
@@ -638,16 +732,17 @@ class HomeKit:
             )
         )
 
-    async def async_remove_bridge_accessory(self, aid):
+    async def async_remove_bridge_accessory(self, aid: int) -> HomeAccessory | None:
         """Try adding accessory to bridge if configured beforehand."""
+        assert self.bridge is not None
         if acc := self.bridge.accessories.pop(aid, None):
-            await acc.stop()
-        return acc
+            return cast(HomeAccessory, acc)
+        return None
 
-    async def async_configure_accessories(self):
+    async def async_configure_accessories(self) -> list[State]:
         """Configure accessories for the included states."""
-        dev_reg = device_registry.async_get(self.hass)
-        ent_reg = entity_registry.async_get(self.hass)
+        dev_reg = dr.async_get(self.hass)
+        ent_reg = er.async_get(self.hass)
         device_lookup = ent_reg.async_get_device_class_lookup(
             {
                 (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.BATTERY_CHARGING),
@@ -667,8 +762,8 @@ class HomeKit:
             if ent_reg_ent := ent_reg.async_get(entity_id):
                 if (
                     ent_reg_ent.entity_category is not None
-                    and not self._filter.explicitly_included(entity_id)
-                ):
+                    or ent_reg_ent.hidden_by is not None
+                ) and not self._filter.explicitly_included(entity_id):
                     continue
 
                 await self._async_set_device_info_attributes(
@@ -680,16 +775,21 @@ class HomeKit:
 
         return entity_states
 
-    async def async_start(self, *args):
+    async def async_start(self, *args: Any) -> None:
         """Load storage and start."""
         if self.status != STATUS_READY:
             return
         self.status = STATUS_WAIT
         async_zc_instance = await zeroconf.async_get_async_instance(self.hass)
-        uuid = await self.hass.helpers.instance_id.async_get()
-        await self.hass.async_add_executor_job(self.setup, async_zc_instance, uuid)
+        uuid = await instance_id.async_get(self.hass)
         self.aid_storage = AccessoryAidStorage(self.hass, self._entry_id)
+        self.iid_storage = AccessoryIIDStorage(self.hass, self._entry_id)
+        # Avoid gather here since it will be I/O bound anyways
         await self.aid_storage.async_initialize()
+        await self.iid_storage.async_initialize()
+        await self.hass.async_add_executor_job(self.setup, async_zc_instance, uuid)
+        assert self.driver is not None
+
         if not await self._async_create_accessories():
             return
         self._async_register_bridge()
@@ -704,8 +804,10 @@ class HomeKit:
         self._async_show_setup_message()
 
     @callback
-    def _async_show_setup_message(self):
+    def _async_show_setup_message(self) -> None:
         """Show the pairing setup message."""
+        assert self.driver is not None
+
         async_show_setup_message(
             self.hass,
             self._entry_id,
@@ -715,8 +817,10 @@ class HomeKit:
         )
 
     @callback
-    def async_unpair(self):
+    def async_unpair(self) -> None:
         """Remove all pairings for an accessory so it can be repaired."""
+        assert self.driver is not None
+
         state = self.driver.state
         for client_uuid in list(state.paired_clients):
             # We need to check again since removing a single client
@@ -730,10 +834,11 @@ class HomeKit:
         self._async_show_setup_message()
 
     @callback
-    def _async_register_bridge(self):
+    def _async_register_bridge(self) -> None:
         """Register the bridge as a device so homekit_controller and exclude it from discovery."""
-        dev_reg = device_registry.async_get(self.hass)
-        formatted_mac = device_registry.format_mac(self.driver.state.mac)
+        assert self.driver is not None
+        dev_reg = dr.async_get(self.hass)
+        formatted_mac = dr.format_mac(self.driver.state.mac)
         # Connections and identifiers are both used here.
         #
         # connections exists so homekit_controller can know the
@@ -746,28 +851,35 @@ class HomeKit:
         # because this was the way you had to fix homekit when pairing
         # failed.
         #
-        connection = (device_registry.CONNECTION_NETWORK_MAC, formatted_mac)
+        connection = (dr.CONNECTION_NETWORK_MAC, formatted_mac)
         identifier = (DOMAIN, self._entry_id, BRIDGE_SERIAL_NUMBER)
         self._async_purge_old_bridges(dev_reg, identifier, connection)
         is_accessory_mode = self._homekit_mode == HOMEKIT_MODE_ACCESSORY
         hk_mode_name = "Accessory" if is_accessory_mode else "Bridge"
         dev_reg.async_get_or_create(
             config_entry_id=self._entry_id,
-            identifiers={identifier},
+            identifiers={
+                identifier  # type: ignore[arg-type]
+            },  # this needs to be migrated as a 2 item tuple at some point
             connections={connection},
             manufacturer=MANUFACTURER,
             name=accessory_friendly_name(self._entry_title, self.driver.accessory),
             model=f"HomeKit {hk_mode_name}",
-            entry_type=device_registry.DeviceEntryType.SERVICE,
+            entry_type=dr.DeviceEntryType.SERVICE,
         )
 
     @callback
-    def _async_purge_old_bridges(self, dev_reg, identifier, connection):
+    def _async_purge_old_bridges(
+        self,
+        dev_reg: dr.DeviceRegistry,
+        identifier: tuple[str, str, str],
+        connection: tuple[str, str],
+    ) -> None:
         """Purge bridges that exist from failed pairing or manual resets."""
         devices_to_purge = []
         for entry in dev_reg.devices.values():
             if self._entry_id in entry.config_entries and (
-                identifier not in entry.identifiers
+                identifier not in entry.identifiers  # type: ignore[comparison-overlap]
                 or connection not in entry.connections
             ):
                 devices_to_purge.append(entry.id)
@@ -776,8 +888,12 @@ class HomeKit:
             dev_reg.async_remove_device(device_id)
 
     @callback
-    def _async_create_single_accessory(self, entity_states):
+    def _async_create_single_accessory(
+        self, entity_states: list[State]
+    ) -> HomeAccessory | None:
         """Create a single HomeKit accessory (accessory mode)."""
+        assert self.driver is not None
+
         if not entity_states:
             _LOGGER.error(
                 "HomeKit %s cannot startup: entity not available: %s",
@@ -796,37 +912,66 @@ class HomeKit:
             )
         return acc
 
-    async def _async_create_bridge_accessory(self, entity_states):
+    async def _async_create_bridge_accessory(
+        self, entity_states: Iterable[State]
+    ) -> HomeAccessory:
         """Create a HomeKit bridge with accessories. (bridge mode)."""
+        assert self.driver is not None
+
         self.bridge = HomeBridge(self.hass, self.driver, self._name)
         for state in entity_states:
             self.add_bridge_accessory(state)
-        dev_reg = device_registry.async_get(self.hass)
         if self._devices:
-            valid_device_ids = []
-            for device_id in self._devices:
-                if not dev_reg.async_get(device_id):
-                    _LOGGER.warning(
-                        "HomeKit %s cannot add device %s because it is missing from the device registry",
-                        self._name,
-                        device_id,
-                    )
-                else:
-                    valid_device_ids.append(device_id)
-            for device_id, device_triggers in (
-                await device_automation.async_get_device_automations(
-                    self.hass,
-                    device_automation.DeviceAutomationType.TRIGGER,
-                    valid_device_ids,
-                )
-            ).items():
-                self.add_bridge_triggers_accessory(
-                    dev_reg.async_get(device_id), device_triggers
-                )
+            await self._async_add_trigger_accessories()
         return self.bridge
 
-    async def _async_create_accessories(self):
+    async def _async_add_trigger_accessories(self) -> None:
+        """Add devices with triggers to the bridge."""
+        dev_reg = dr.async_get(self.hass)
+        valid_device_ids = []
+        for device_id in self._devices:
+            if not dev_reg.async_get(device_id):
+                _LOGGER.warning(
+                    (
+                        "HomeKit %s cannot add device %s because it is missing from the"
+                        " device registry"
+                    ),
+                    self._name,
+                    device_id,
+                )
+            else:
+                valid_device_ids.append(device_id)
+        for device_id, device_triggers in (
+            await device_automation.async_get_device_automations(
+                self.hass,
+                device_automation.DeviceAutomationType.TRIGGER,
+                valid_device_ids,
+            )
+        ).items():
+            device = dev_reg.async_get(device_id)
+            assert device is not None
+            valid_device_triggers: list[dict[str, Any]] = []
+            for trigger in device_triggers:
+                try:
+                    await async_validate_trigger_config(self.hass, trigger)
+                except vol.Invalid as ex:
+                    _LOGGER.debug(
+                        (
+                            "%s: cannot add unsupported trigger %s because it requires"
+                            " additional inputs which are not supported by HomeKit: %s"
+                        ),
+                        self._name,
+                        trigger,
+                        ex,
+                    )
+                    continue
+                valid_device_triggers.append(trigger)
+            self.add_bridge_triggers_accessory(device, valid_device_triggers)
+
+    async def _async_create_accessories(self) -> bool:
         """Create the accessories."""
+        assert self.driver is not None
+
         entity_states = await self.async_configure_accessories()
         if self._homekit_mode == HOMEKIT_MODE_ACCESSORY:
             acc = self._async_create_single_accessory(entity_states)
@@ -839,16 +984,22 @@ class HomeKit:
         self.driver.accessory = acc
         return True
 
-    async def async_stop(self, *args):
+    async def async_stop(self, *args: Any) -> None:
         """Stop the accessory driver."""
         if self.status != STATUS_RUNNING:
             return
         self.status = STATUS_STOPPED
         _LOGGER.debug("Driver stop for %s", self._name)
-        await self.driver.async_stop()
+        if self.driver:
+            await self.driver.async_stop()
 
     @callback
-    def _async_configure_linked_sensors(self, ent_reg_ent, device_lookup, state):
+    def _async_configure_linked_sensors(
+        self,
+        ent_reg_ent: er.RegistryEntry,
+        device_lookup: dict[str, dict[tuple[str, str | None], str]],
+        state: State,
+    ) -> None:
         if (
             ent_reg_ent is None
             or ent_reg_ent.device_id is None
@@ -905,7 +1056,12 @@ class HomeKit:
                     current_humidity_sensor_entity_id,
                 )
 
-    async def _async_set_device_info_attributes(self, ent_reg_ent, dev_reg, entity_id):
+    async def _async_set_device_info_attributes(
+        self,
+        ent_reg_ent: er.RegistryEntry,
+        dev_reg: dr.DeviceRegistry,
+        entity_id: str,
+    ) -> None:
         """Set attributes that will be used for homekit device info."""
         ent_cfg = self._config.setdefault(entity_id, {})
         if ent_reg_ent.device_id:
@@ -920,7 +1076,9 @@ class HomeKit:
             except IntegrationNotFound:
                 ent_cfg[ATTR_INTEGRATION] = ent_reg_ent.platform
 
-    def _fill_config_from_device_registry_entry(self, device_entry, config):
+    def _fill_config_from_device_registry_entry(
+        self, device_entry: dr.DeviceEntry, config: dict[str, Any]
+    ) -> None:
         """Populate a config dict from the registry."""
         if device_entry.manufacturer:
             config[ATTR_MANUFACTURER] = device_entry.manufacturer
@@ -943,9 +1101,8 @@ class HomeKitPairingQRView(HomeAssistantView):
     name = "api:homekit:pairingqr"
     requires_auth = False
 
-    async def get(self, request):
+    async def get(self, request: web.Request) -> web.Response:
         """Retrieve the pairing QRCode image."""
-        # pylint: disable=no-self-use
         if not request.query_string:
             raise Unauthorized()
         entry_id, secret = request.query_string.split("-")

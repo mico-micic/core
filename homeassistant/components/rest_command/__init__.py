@@ -125,7 +125,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     headers=headers,
                     timeout=timeout,
                 ) as response:
-
                     if response.status < HTTPStatus.BAD_REQUEST:
                         _LOGGER.debug(
                             "Success. Url: %s. Status code: %d. Payload: %s",
@@ -144,13 +143,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             except asyncio.TimeoutError:
                 _LOGGER.warning("Timeout call %s", request_url)
 
-            except aiohttp.ClientError:
-                _LOGGER.error("Client error %s", request_url)
+            except aiohttp.ClientError as err:
+                _LOGGER.error(
+                    "Client error. Url: %s. Error: %s",
+                    request_url,
+                    err,
+                )
 
         # register services
         hass.services.async_register(DOMAIN, name, async_service_handler)
 
-    for command, command_config in config[DOMAIN].items():
-        async_register_rest_command(command, command_config)
+    for name, command_config in config[DOMAIN].items():
+        async_register_rest_command(name, command_config)
 
     return True

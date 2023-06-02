@@ -1,15 +1,20 @@
 """Support for Motion Blinds sensors."""
-from motionblinds import BlindType
+from motionblinds import DEVICE_TYPES_WIFI, BlindType
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTR_AVAILABLE, DOMAIN, KEY_COORDINATOR, KEY_GATEWAY
+from .gateway import device_name
 
 ATTR_BATTERY_VOLTAGE = "battery_voltage"
 TYPE_BLIND = "blind"
@@ -31,13 +36,15 @@ async def async_setup_entry(
         if blind.type == BlindType.TopDownBottomUp:
             entities.append(MotionTDBUBatterySensor(coordinator, blind, "Bottom"))
             entities.append(MotionTDBUBatterySensor(coordinator, blind, "Top"))
-        elif blind.battery_voltage > 0:
+        elif blind.battery_voltage is not None and blind.battery_voltage > 0:
             # Only add battery powered blinds
             entities.append(MotionBatterySensor(coordinator, blind))
 
-    entities.append(
-        MotionSignalStrengthSensor(coordinator, motion_gateway, TYPE_GATEWAY)
-    )
+    # Do not add signal sensor twice for direct WiFi blinds
+    if motion_gateway.device_type not in DEVICE_TYPES_WIFI:
+        entities.append(
+            MotionSignalStrengthSensor(coordinator, motion_gateway, TYPE_GATEWAY)
+        )
 
     async_add_entities(entities)
 
@@ -54,11 +61,11 @@ class MotionBatterySensor(CoordinatorEntity, SensorEntity):
 
         self._blind = blind
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, blind.mac)})
-        self._attr_name = f"{blind.blind_type}-battery-{blind.mac[12:]}"
+        self._attr_name = f"{device_name(blind)} battery"
         self._attr_unique_id = f"{blind.mac}-battery"
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Return True if entity is available."""
         if self.coordinator.data is None:
             return False
@@ -78,12 +85,12 @@ class MotionBatterySensor(CoordinatorEntity, SensorEntity):
         """Return device specific state attributes."""
         return {ATTR_BATTERY_VOLTAGE: self._blind.battery_voltage}
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Subscribe to multicast pushes."""
         self._blind.Register_callback(self.unique_id, self.schedule_update_ha_state)
         await super().async_added_to_hass()
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe when removed."""
         self._blind.Remove_callback(self.unique_id)
         await super().async_will_remove_from_hass()
@@ -98,7 +105,7 @@ class MotionTDBUBatterySensor(MotionBatterySensor):
 
         self._motor = motor
         self._attr_unique_id = f"{blind.mac}-{motor}-battery"
-        self._attr_name = f"{blind.blind_type}-{motor}-battery-{blind.mac[12:]}"
+        self._attr_name = f"{device_name(blind)} {motor} battery"
 
     @property
     def native_value(self):
@@ -130,20 +137,19 @@ class MotionSignalStrengthSensor(CoordinatorEntity, SensorEntity):
         """Initialize the Motion Signal Strength Sensor."""
         super().__init__(coordinator)
 
+        if device_type == TYPE_GATEWAY:
+            name = "Motion gateway signal strength"
+        else:
+            name = f"{device_name(device)} signal strength"
+
         self._device = device
         self._device_type = device_type
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, device.mac)})
         self._attr_unique_id = f"{device.mac}-RSSI"
+        self._attr_name = name
 
     @property
-    def name(self):
-        """Return the name of the blind signal strength sensor."""
-        if self._device_type == TYPE_GATEWAY:
-            return "Motion gateway signal strength"
-        return f"{self._device.blind_type} signal strength - {self._device.mac[12:]}"
-
-    @property
-    def available(self):
+    def available(self) -> bool:
         """Return True if entity is available."""
         if self.coordinator.data is None:
             return False
@@ -162,12 +168,12 @@ class MotionSignalStrengthSensor(CoordinatorEntity, SensorEntity):
         """Return the state of the sensor."""
         return self._device.RSSI
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Subscribe to multicast pushes."""
         self._device.Register_callback(self.unique_id, self.schedule_update_ha_state)
         await super().async_added_to_hass()
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe when removed."""
         self._device.Remove_callback(self.unique_id)
         await super().async_will_remove_from_hass()

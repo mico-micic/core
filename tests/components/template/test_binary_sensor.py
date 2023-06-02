@@ -1,8 +1,9 @@
 """The tests for the Template Binary sensor platform."""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from unittest.mock import patch
 
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from homeassistant import setup
@@ -15,8 +16,9 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import Context, CoreState, State
-from homeassistant.helpers import entity_registry
+from homeassistant.core import Context, CoreState, HomeAssistant, State
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_component import async_update_entity
 from homeassistant.setup import async_setup_component
 import homeassistant.util.dt as dt_util
 
@@ -24,6 +26,7 @@ from tests.common import (
     assert_setup_component,
     async_fire_time_changed,
     mock_restore_cache,
+    mock_restore_cache_with_extra_data,
 )
 
 ON = "on"
@@ -32,7 +35,7 @@ OFF = "off"
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id,name,attributes",
+    ("config", "domain", "entity_id", "name", "attributes"),
     [
         (
             {
@@ -65,7 +68,9 @@ OFF = "off"
         ),
     ],
 )
-async def test_setup_minimal(hass, start_ha, entity_id, name, attributes):
+async def test_setup_minimal(
+    hass: HomeAssistant, start_ha, entity_id, name, attributes
+) -> None:
     """Test the setup."""
     state = hass.states.get(entity_id)
     assert state is not None
@@ -76,7 +81,7 @@ async def test_setup_minimal(hass, start_ha, entity_id, name, attributes):
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -109,7 +114,7 @@ async def test_setup_minimal(hass, start_ha, entity_id, name, attributes):
         ),
     ],
 )
-async def test_setup(hass, start_ha, entity_id):
+async def test_setup(hass: HomeAssistant, start_ha, entity_id) -> None:
     """Test the setup."""
     state = hass.states.get(entity_id)
     assert state is not None
@@ -120,7 +125,7 @@ async def test_setup(hass, start_ha, entity_id):
 
 @pytest.mark.parametrize("count", [0])
 @pytest.mark.parametrize(
-    "config,domain",
+    ("config", "domain"),
     [
         # No legacy binary sensors
         (
@@ -176,14 +181,14 @@ async def test_setup(hass, start_ha, entity_id):
         ),
     ],
 )
-async def test_setup_invalid_sensors(hass, count, start_ha):
+async def test_setup_invalid_sensors(hass: HomeAssistant, count, start_ha) -> None:
     """Test setup with no sensors."""
     assert len(hass.states.async_entity_ids("binary_sensor")) == count
 
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -222,7 +227,7 @@ async def test_setup_invalid_sensors(hass, count, start_ha):
         ),
     ],
 )
-async def test_icon_template(hass, start_ha, entity_id):
+async def test_icon_template(hass: HomeAssistant, start_ha, entity_id) -> None:
     """Test icon template."""
     state = hass.states.get(entity_id)
     assert state.attributes.get("icon") == ""
@@ -235,7 +240,7 @@ async def test_icon_template(hass, start_ha, entity_id):
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -274,7 +279,9 @@ async def test_icon_template(hass, start_ha, entity_id):
         ),
     ],
 )
-async def test_entity_picture_template(hass, start_ha, entity_id):
+async def test_entity_picture_template(
+    hass: HomeAssistant, start_ha, entity_id
+) -> None:
     """Test entity_picture template."""
     state = hass.states.get(entity_id)
     assert state.attributes.get("entity_picture") == ""
@@ -287,7 +294,7 @@ async def test_entity_picture_template(hass, start_ha, entity_id):
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -322,7 +329,7 @@ async def test_entity_picture_template(hass, start_ha, entity_id):
         ),
     ],
 )
-async def test_attribute_templates(hass, start_ha, entity_id):
+async def test_attribute_templates(hass: HomeAssistant, start_ha, entity_id) -> None:
     """Test attribute_templates template."""
     state = hass.states.get(entity_id)
     assert state.attributes.get("test_attribute") == "It ."
@@ -344,7 +351,7 @@ async def setup_mock():
         yield _update_state
 
 
-@pytest.mark.parametrize("count,domain", [(1, binary_sensor.DOMAIN)])
+@pytest.mark.parametrize(("count", "domain"), [(1, binary_sensor.DOMAIN)])
 @pytest.mark.parametrize(
     "config",
     [
@@ -366,7 +373,7 @@ async def setup_mock():
         },
     ],
 )
-async def test_match_all(hass, setup_mock, start_ha):
+async def test_match_all(hass: HomeAssistant, setup_mock, start_ha) -> None:
     """Test template that is rerendered on any state lifecycle."""
     init_calls = len(setup_mock.mock_calls)
 
@@ -375,7 +382,7 @@ async def test_match_all(hass, setup_mock, start_ha):
     assert len(setup_mock.mock_calls) == init_calls
 
 
-@pytest.mark.parametrize("count,domain", [(1, binary_sensor.DOMAIN)])
+@pytest.mark.parametrize(("count", "domain"), [(1, binary_sensor.DOMAIN)])
 @pytest.mark.parametrize(
     "config",
     [
@@ -393,7 +400,7 @@ async def test_match_all(hass, setup_mock, start_ha):
         },
     ],
 )
-async def test_event(hass, start_ha):
+async def test_event(hass: HomeAssistant, start_ha) -> None:
     """Test the event."""
     state = hass.states.get("binary_sensor.test")
     assert state.state == OFF
@@ -406,7 +413,7 @@ async def test_event(hass, start_ha):
 
 
 @pytest.mark.parametrize(
-    "config,count,domain",
+    ("config", "count", "domain"),
     [
         (
             {
@@ -503,7 +510,7 @@ async def test_event(hass, start_ha):
         ),
     ],
 )
-async def test_template_delay_on_off(hass, start_ha):
+async def test_template_delay_on_off(hass: HomeAssistant, start_ha) -> None:
     """Test binary sensor template delay on."""
     # Ensure the initial state is not on
     assert hass.states.get("binary_sensor.test_on").state != ON
@@ -546,7 +553,7 @@ async def test_template_delay_on_off(hass, start_ha):
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -581,7 +588,9 @@ async def test_template_delay_on_off(hass, start_ha):
         ),
     ],
 )
-async def test_available_without_availability_template(hass, start_ha, entity_id):
+async def test_available_without_availability_template(
+    hass: HomeAssistant, start_ha, entity_id
+) -> None:
     """Ensure availability is true without an availability_template."""
     state = hass.states.get(entity_id)
 
@@ -591,7 +600,7 @@ async def test_available_without_availability_template(hass, start_ha, entity_id
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -628,7 +637,7 @@ async def test_available_without_availability_template(hass, start_ha, entity_id
         ),
     ],
 )
-async def test_availability_template(hass, start_ha, entity_id):
+async def test_availability_template(hass: HomeAssistant, start_ha, entity_id) -> None:
     """Test availability template."""
     hass.states.async_set("sensor.test_state", STATE_OFF)
     await hass.async_block_till_done()
@@ -644,7 +653,7 @@ async def test_availability_template(hass, start_ha, entity_id):
     assert state.attributes[ATTR_DEVICE_CLASS] == "motion"
 
 
-@pytest.mark.parametrize("count,domain", [(1, binary_sensor.DOMAIN)])
+@pytest.mark.parametrize(("count", "domain"), [(1, binary_sensor.DOMAIN)])
 @pytest.mark.parametrize(
     "config",
     [
@@ -663,7 +672,9 @@ async def test_availability_template(hass, start_ha, entity_id):
         },
     ],
 )
-async def test_invalid_attribute_template(hass, start_ha, caplog_setup_text):
+async def test_invalid_attribute_template(
+    hass: HomeAssistant, start_ha, caplog_setup_text
+) -> None:
     """Test that errors are logged if rendering template fails."""
     hass.states.async_set("binary_sensor.test_sensor", "true")
     assert len(hass.states.async_all()) == 2
@@ -671,7 +682,7 @@ async def test_invalid_attribute_template(hass, start_ha, caplog_setup_text):
     assert ("TemplateError") in caplog_setup_text
 
 
-@pytest.mark.parametrize("count,domain", [(1, binary_sensor.DOMAIN)])
+@pytest.mark.parametrize(("count", "domain"), [(1, binary_sensor.DOMAIN)])
 @pytest.mark.parametrize(
     "config",
     [
@@ -689,15 +700,17 @@ async def test_invalid_attribute_template(hass, start_ha, caplog_setup_text):
     ],
 )
 async def test_invalid_availability_template_keeps_component_available(
-    hass, start_ha, caplog_setup_text
-):
+    hass: HomeAssistant, start_ha, caplog_setup_text
+) -> None:
     """Test that an invalid availability keeps the device available."""
 
     assert hass.states.get("binary_sensor.my_sensor").state != STATE_UNAVAILABLE
     assert "UndefinedError: 'x' is undefined" in caplog_setup_text
 
 
-async def test_no_update_template_match_all(hass, caplog):
+async def test_no_update_template_match_all(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test that we do not update sensors that match on all."""
 
     hass.state = CoreState.not_running
@@ -752,14 +765,10 @@ async def test_no_update_template_match_all(hass, caplog):
     assert hass.states.get("binary_sensor.all_entity_picture").state == OFF
     assert hass.states.get("binary_sensor.all_attribute").state == OFF
 
-    await hass.helpers.entity_component.async_update_entity("binary_sensor.all_state")
-    await hass.helpers.entity_component.async_update_entity("binary_sensor.all_icon")
-    await hass.helpers.entity_component.async_update_entity(
-        "binary_sensor.all_entity_picture"
-    )
-    await hass.helpers.entity_component.async_update_entity(
-        "binary_sensor.all_attribute"
-    )
+    await async_update_entity(hass, "binary_sensor.all_state")
+    await async_update_entity(hass, "binary_sensor.all_icon")
+    await async_update_entity(hass, "binary_sensor.all_entity_picture")
+    await async_update_entity(hass, "binary_sensor.all_attribute")
 
     assert hass.states.get("binary_sensor.all_state").state == ON
     assert hass.states.get("binary_sensor.all_icon").state == OFF
@@ -767,7 +776,7 @@ async def test_no_update_template_match_all(hass, caplog):
     assert hass.states.get("binary_sensor.all_attribute").state == OFF
 
 
-@pytest.mark.parametrize("count,domain", [(1, "template")])
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
 @pytest.mark.parametrize(
     "config",
     [
@@ -796,26 +805,22 @@ async def test_no_update_template_match_all(hass, caplog):
         },
     ],
 )
-async def test_unique_id(hass, start_ha):
+async def test_unique_id(
+    hass: HomeAssistant, start_ha, entity_registry: er.EntityRegistry
+) -> None:
     """Test unique_id option only creates one binary sensor per id."""
     assert len(hass.states.async_all()) == 2
 
-    ent_reg = entity_registry.async_get(hass)
-
-    assert len(ent_reg.entities) == 2
-    assert (
-        ent_reg.async_get_entity_id("binary_sensor", "template", "group-id-sensor-id")
-        is not None
+    assert len(entity_registry.entities) == 2
+    assert entity_registry.async_get_entity_id(
+        "binary_sensor", "template", "group-id-sensor-id"
     )
-    assert (
-        ent_reg.async_get_entity_id(
-            "binary_sensor", "template", "not-so-unique-anymore"
-        )
-        is not None
+    assert entity_registry.async_get_entity_id(
+        "binary_sensor", "template", "not-so-unique-anymore"
     )
 
 
-@pytest.mark.parametrize("count,domain", [(1, binary_sensor.DOMAIN)])
+@pytest.mark.parametrize(("count", "domain"), [(1, binary_sensor.DOMAIN)])
 @pytest.mark.parametrize(
     "config",
     [
@@ -835,7 +840,9 @@ async def test_unique_id(hass, start_ha):
         },
     ],
 )
-async def test_template_validation_error(hass, caplog, start_ha):
+async def test_template_validation_error(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, start_ha
+) -> None:
     """Test binary sensor template delay on."""
     caplog.set_level(logging.ERROR)
     state = hass.states.get("binary_sensor.test")
@@ -860,7 +867,7 @@ async def test_template_validation_error(hass, caplog, start_ha):
 
 @pytest.mark.parametrize("count", [1])
 @pytest.mark.parametrize(
-    "config,domain,entity_id",
+    ("config", "domain", "entity_id"),
     [
         (
             {
@@ -897,7 +904,9 @@ async def test_template_validation_error(hass, caplog, start_ha):
         ),
     ],
 )
-async def test_availability_icon_picture(hass, start_ha, entity_id):
+async def test_availability_icon_picture(
+    hass: HomeAssistant, start_ha, entity_id
+) -> None:
     """Test name, icon and picture templates are rendered at setup."""
     state = hass.states.get(entity_id)
     assert state.state == "unavailable"
@@ -919,7 +928,7 @@ async def test_availability_icon_picture(hass, start_ha, entity_id):
     }
 
 
-@pytest.mark.parametrize("count,domain", [(1, "template")])
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
 @pytest.mark.parametrize(
     "config",
     [
@@ -934,7 +943,7 @@ async def test_availability_icon_picture(hass, start_ha, entity_id):
     ],
 )
 @pytest.mark.parametrize(
-    "extra_config, restored_state, initial_state",
+    ("extra_config", "restored_state", "initial_state"),
     [
         ({}, ON, OFF),
         ({}, OFF, OFF),
@@ -951,8 +960,14 @@ async def test_availability_icon_picture(hass, start_ha, entity_id):
     ],
 )
 async def test_restore_state(
-    hass, count, domain, config, extra_config, restored_state, initial_state
-):
+    hass: HomeAssistant,
+    count,
+    domain,
+    config,
+    extra_config,
+    restored_state,
+    initial_state,
+) -> None:
     """Test restoring template binary sensor."""
 
     fake_state = State(
@@ -983,7 +998,7 @@ async def test_restore_state(
     assert state.state == initial_state
 
 
-@pytest.mark.parametrize("count,domain", [(2, "template")])
+@pytest.mark.parametrize(("count", "domain"), [(2, "template")])
 @pytest.mark.parametrize(
     "config",
     [
@@ -1034,7 +1049,9 @@ async def test_restore_state(
         },
     ],
 )
-async def test_trigger_entity(hass, start_ha):
+async def test_trigger_entity(
+    hass: HomeAssistant, start_ha, entity_registry: er.EntityRegistry
+) -> None:
     """Test trigger entity works."""
     await hass.async_block_till_done()
     state = hass.states.get("binary_sensor.hello_name")
@@ -1057,14 +1074,13 @@ async def test_trigger_entity(hass, start_ha):
     assert state.attributes.get("plus_one") == 3
     assert state.context is context
 
-    ent_reg = entity_registry.async_get(hass)
-    assert len(ent_reg.entities) == 2
+    assert len(entity_registry.entities) == 2
     assert (
-        ent_reg.entities["binary_sensor.hello_name"].unique_id
+        entity_registry.entities["binary_sensor.hello_name"].unique_id
         == "listening-test-event-hello_name-id"
     )
     assert (
-        ent_reg.entities["binary_sensor.via_list"].unique_id
+        entity_registry.entities["binary_sensor.via_list"].unique_id
         == "listening-test-event-via_list-id"
     )
 
@@ -1085,7 +1101,7 @@ async def test_trigger_entity(hass, start_ha):
     assert state.attributes.get("another") == "si"
 
 
-@pytest.mark.parametrize("count,domain", [(1, "template")])
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
 @pytest.mark.parametrize(
     "config",
     [
@@ -1103,7 +1119,9 @@ async def test_trigger_entity(hass, start_ha):
         },
     ],
 )
-async def test_template_with_trigger_templated_delay_on(hass, start_ha):
+async def test_template_with_trigger_templated_delay_on(
+    hass: HomeAssistant, start_ha
+) -> None:
     """Test binary sensor template with template delay on."""
     state = hass.states.get("binary_sensor.test")
     assert state.state == STATE_UNKNOWN
@@ -1112,6 +1130,11 @@ async def test_template_with_trigger_templated_delay_on(hass, start_ha):
     hass.bus.async_fire("test_event", {"beer": 2}, context=context)
     await hass.async_block_till_done()
 
+    # State should still be unknown
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == STATE_UNKNOWN
+
+    # Now wait for the on delay
     future = dt_util.utcnow() + timedelta(seconds=3)
     async_fire_time_changed(hass, future)
     await hass.async_block_till_done()
@@ -1123,6 +1146,212 @@ async def test_template_with_trigger_templated_delay_on(hass, start_ha):
     future = dt_util.utcnow() + timedelta(seconds=2)
     async_fire_time_changed(hass, future)
     await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == OFF
+
+
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "template": {
+                "trigger": {"platform": "event", "event_type": "test_event"},
+                "binary_sensor": {
+                    "name": "test",
+                    "state": "{{ trigger.event.data.beer == 2 }}",
+                    "device_class": "motion",
+                    "picture": "{{ '/local/dogs.png' }}",
+                    "icon": "{{ 'mdi:pirate' }}",
+                    "attributes": {
+                        "plus_one": "{{ trigger.event.data.beer + 1 }}",
+                        "another": "{{ trigger.event.data.uno_mas or 1 }}",
+                    },
+                },
+            },
+        },
+    ],
+)
+@pytest.mark.parametrize(
+    ("restored_state", "initial_state", "initial_attributes"),
+    [
+        (ON, ON, ["entity_picture", "icon", "plus_one"]),
+        (OFF, OFF, ["entity_picture", "icon", "plus_one"]),
+        (STATE_UNAVAILABLE, STATE_UNKNOWN, []),
+        (STATE_UNKNOWN, STATE_UNKNOWN, []),
+    ],
+)
+async def test_trigger_entity_restore_state(
+    hass: HomeAssistant,
+    count,
+    domain,
+    config,
+    restored_state,
+    initial_state,
+    initial_attributes,
+) -> None:
+    """Test restoring trigger template binary sensor."""
+
+    restored_attributes = {
+        "entity_picture": "/local/cats.png",
+        "icon": "mdi:ship",
+        "plus_one": 55,
+    }
+
+    fake_state = State(
+        "binary_sensor.test",
+        restored_state,
+        restored_attributes,
+    )
+    fake_extra_data = {
+        "auto_off_time": None,
+    }
+    mock_restore_cache_with_extra_data(hass, ((fake_state, fake_extra_data),))
+    with assert_setup_component(count, domain):
+        assert await async_setup_component(
+            hass,
+            domain,
+            config,
+        )
+
+        await hass.async_block_till_done()
+        await hass.async_start()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == initial_state
+    for attr in restored_attributes:
+        if attr in initial_attributes:
+            assert state.attributes[attr] == restored_attributes[attr]
+        else:
+            assert attr not in state.attributes
+    assert "another" not in state.attributes
+
+    hass.bus.async_fire("test_event", {"beer": 2})
+    await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == ON
+    assert state.attributes["icon"] == "mdi:pirate"
+    assert state.attributes["entity_picture"] == "/local/dogs.png"
+    assert state.attributes["plus_one"] == 3
+    assert state.attributes["another"] == 1
+
+
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "template": {
+                "trigger": {"platform": "event", "event_type": "test_event"},
+                "binary_sensor": {
+                    "name": "test",
+                    "state": "{{ trigger.event.data.beer == 2 }}",
+                    "device_class": "motion",
+                    "auto_off": '{{ ({ "seconds": 1 + 1 }) }}',
+                },
+            },
+        },
+    ],
+)
+@pytest.mark.parametrize("restored_state", [ON, OFF])
+async def test_trigger_entity_restore_state_auto_off(
+    hass: HomeAssistant,
+    count,
+    domain,
+    config,
+    restored_state,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test restoring trigger template binary sensor."""
+
+    freezer.move_to("2022-02-02 12:02:00+00:00")
+    fake_state = State(
+        "binary_sensor.test",
+        restored_state,
+        {},
+    )
+    fake_extra_data = {
+        "auto_off_time": {
+            "__type": "<class 'datetime.datetime'>",
+            "isoformat": datetime(
+                2022, 2, 2, 12, 2, 2, tzinfo=timezone.utc
+            ).isoformat(),
+        },
+    }
+    mock_restore_cache_with_extra_data(hass, ((fake_state, fake_extra_data),))
+    with assert_setup_component(count, domain):
+        assert await async_setup_component(
+            hass,
+            domain,
+            config,
+        )
+
+        await hass.async_block_till_done()
+        await hass.async_start()
+        await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == restored_state
+
+    # Now wait for the auto-off
+    freezer.move_to("2022-02-02 12:02:03+00:00")
+    await hass.async_block_till_done()
+    await hass.async_block_till_done()
+
+    state = hass.states.get("binary_sensor.test")
+    assert state.state == OFF
+
+
+@pytest.mark.parametrize(("count", "domain"), [(1, "template")])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "template": {
+                "trigger": {"platform": "event", "event_type": "test_event"},
+                "binary_sensor": {
+                    "name": "test",
+                    "state": "{{ trigger.event.data.beer == 2 }}",
+                    "device_class": "motion",
+                    "auto_off": '{{ ({ "seconds": 1 + 1 }) }}',
+                },
+            },
+        },
+    ],
+)
+async def test_trigger_entity_restore_state_auto_off_expired(
+    hass: HomeAssistant, count, domain, config, freezer: FrozenDateTimeFactory
+) -> None:
+    """Test restoring trigger template binary sensor."""
+
+    freezer.move_to("2022-02-02 12:02:00+00:00")
+    fake_state = State(
+        "binary_sensor.test",
+        ON,
+        {},
+    )
+    fake_extra_data = {
+        "auto_off_time": {
+            "__type": "<class 'datetime.datetime'>",
+            "isoformat": datetime(
+                2022, 2, 2, 12, 2, 0, tzinfo=timezone.utc
+            ).isoformat(),
+        },
+    }
+    mock_restore_cache_with_extra_data(hass, ((fake_state, fake_extra_data),))
+    with assert_setup_component(count, domain):
+        assert await async_setup_component(
+            hass,
+            domain,
+            config,
+        )
+
+        await hass.async_block_till_done()
+        await hass.async_start()
+        await hass.async_block_till_done()
 
     state = hass.states.get("binary_sensor.test")
     assert state.state == OFF

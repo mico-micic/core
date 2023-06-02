@@ -18,7 +18,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv, device_registry
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
@@ -97,6 +97,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         token_saver=token_saver,
     )
     try:
+        # pylint: disable-next=fixme
+        # TODO Remove authlib constraint when refactoring this code
         await session.ensure_active_token()
     except ConnectTimeout as err:
         _LOGGER.debug("Connection Timeout")
@@ -254,6 +256,8 @@ class MinutPointClient:
 class MinutPointEntity(Entity):
     """Base Entity used by the sensors."""
 
+    _attr_should_poll = False
+
     def __init__(self, point_client, device_id, device_class):
         """Initialize the entity."""
         self._async_unsub_dispatcher_connect = None
@@ -318,9 +322,7 @@ class MinutPointEntity(Entity):
         """Return a device description for device registry."""
         device = self.device.device
         return DeviceInfo(
-            connections={
-                (device_registry.CONNECTION_NETWORK_MAC, device["device_mac"])
-            },
+            connections={(dr.CONNECTION_NETWORK_MAC, device["device_mac"])},
             identifiers={(DOMAIN, device["device_id"])},
             manufacturer="Minut",
             model=f"Point v{device['hardware_version']}",
@@ -344,11 +346,6 @@ class MinutPointEntity(Entity):
         """Return the last_update time for the device."""
         last_update = parse_datetime(self.device.last_update)
         return last_update
-
-    @property
-    def should_poll(self):
-        """No polling needed for point."""
-        return False
 
     @property
     def unique_id(self):

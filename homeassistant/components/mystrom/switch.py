@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from pymystrom.exceptions import MyStromConnectionError
 from pymystrom.switch import MyStromSwitch as _MyStromSwitch
@@ -52,56 +53,31 @@ class MyStromSwitch(SwitchEntity):
 
     def __init__(self, plug, name):
         """Initialize the myStrom switch/plug."""
-        self._name = name
         self.plug = plug
-        self._available = True
-        self.relay = None
+        self._attr_name = name
+        self._attr_unique_id = self.plug.mac
 
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._name
-
-    @property
-    def is_on(self):
-        """Return true if switch is on."""
-        return bool(self.relay)
-
-    @property
-    def unique_id(self):
-        """Return a unique ID."""
-        return self.plug._mac  # pylint: disable=protected-access
-
-    @property
-    def current_power_w(self):
-        """Return the current power consumption in W."""
-        return self.plug.consumption
-
-    @property
-    def available(self):
-        """Could the device be accessed during the last update call."""
-        return self._available
-
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
         try:
             await self.plug.turn_on()
         except MyStromConnectionError:
             _LOGGER.error("No route to myStrom plug")
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
         try:
             await self.plug.turn_off()
         except MyStromConnectionError:
             _LOGGER.error("No route to myStrom plug")
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Get the latest data from the device and update the data."""
         try:
             await self.plug.get_state()
-            self.relay = self.plug.relay
-            self._available = True
+            self._attr_is_on = self.plug.relay
+            self._attr_available = True
         except MyStromConnectionError:
-            self._available = False
-            _LOGGER.error("No route to myStrom plug")
+            if self.available:
+                self._attr_available = False
+                _LOGGER.error("No route to myStrom plug")

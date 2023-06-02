@@ -1,17 +1,17 @@
 """Tests for the diagnostics data provided by the RDW integration."""
-from aiohttp import ClientSession
 
 from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 from tests.components.diagnostics import get_diagnostics_for_config_entry
+from tests.typing import ClientSessionGenerator
 
 
 async def test_diagnostics(
     hass: HomeAssistant,
-    hass_client: ClientSession,
+    hass_client: ClientSessionGenerator,
     init_integration: MockConfigEntry,
-):
+) -> None:
     """Test diagnostics."""
     assert await get_diagnostics_for_config_entry(
         hass, hass_client, init_integration
@@ -29,7 +29,6 @@ async def test_diagnostics(
         "license_plate": "11ZKZ3",
         "list_price": 10697,
         "first_admission": "2013-01-04",
-        "first_admission_netherlands": "2013-01-04",
         "mass_empty": 840,
         "mass_driveable": 940,
         "model": "Citigo",

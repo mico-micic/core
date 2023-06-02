@@ -11,19 +11,18 @@
     "step": {
       "user": {
         "data": {
-          "username": "[%key:common::config_flow::data::email%] / devolo ID",
+          "username": "Email / devolo ID",
           "password": "[%key:common::config_flow::data::password%]",
-          "mydevolo_url": "mydevolo [%key:common::config_flow::data::url%]"
+          "mydevolo_url": "mydevolo URL"
         }
       },
       "zeroconf_confirm": {
         "data": {
-          "username": "[%key:common::config_flow::data::email%] / devolo ID",
+          "username": "Email / devolo ID",
           "password": "[%key:common::config_flow::data::password%]",
-          "mydevolo_url": "mydevolo [%key:common::config_flow::data::url%]"
+          "mydevolo_url": "mydevolo URL"
         }
       }
     }
   }
 }
-

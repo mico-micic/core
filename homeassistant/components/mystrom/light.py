@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from pymystrom.bulb import MyStromBulb
 from pymystrom.exceptions import MyStromConnectionError
@@ -12,11 +13,9 @@ from homeassistant.components.light import (
     ATTR_EFFECT,
     ATTR_HS_COLOR,
     PLATFORM_SCHEMA,
-    SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR,
-    SUPPORT_EFFECT,
-    SUPPORT_FLASH,
+    ColorMode,
     LightEntity,
+    LightEntityFeature,
 )
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_NAME
 from homeassistant.core import HomeAssistant
@@ -29,12 +28,8 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAME = "myStrom bulb"
 
-SUPPORT_MYSTROM = SUPPORT_BRIGHTNESS | SUPPORT_EFFECT | SUPPORT_FLASH | SUPPORT_COLOR
-
 EFFECT_RAINBOW = "rainbow"
 EFFECT_SUNRISE = "sunrise"
-
-MYSTROM_EFFECT_LIST = [EFFECT_RAINBOW, EFFECT_SUNRISE]
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
@@ -74,58 +69,20 @@ async def async_setup_platform(
 class MyStromLight(LightEntity):
     """Representation of the myStrom WiFi bulb."""
 
+    _attr_color_mode = ColorMode.HS
+    _attr_supported_color_modes = {ColorMode.HS}
+    _attr_supported_features = LightEntityFeature.EFFECT | LightEntityFeature.FLASH
+    _attr_effect_list = [EFFECT_RAINBOW, EFFECT_SUNRISE]
+
     def __init__(self, bulb, name, mac):
         """Initialize the light."""
         self._bulb = bulb
-        self._name = name
-        self._state = None
-        self._available = False
-        self._brightness = 0
-        self._color_h = 0
-        self._color_s = 0
-        self._mac = mac
+        self._attr_name = name
+        self._attr_available = False
+        self._attr_unique_id = mac
+        self._attr_hs_color = 0, 0
 
-    @property
-    def name(self):
-        """Return the display name of this light."""
-        return self._name
-
-    @property
-    def unique_id(self):
-        """Return a unique ID."""
-        return self._mac
-
-    @property
-    def supported_features(self):
-        """Flag supported features."""
-        return SUPPORT_MYSTROM
-
-    @property
-    def brightness(self):
-        """Return the brightness of the light."""
-        return self._brightness
-
-    @property
-    def hs_color(self):
-        """Return the color of the light."""
-        return self._color_h, self._color_s
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return self._available
-
-    @property
-    def effect_list(self):
-        """Return the list of supported effects."""
-        return MYSTROM_EFFECT_LIST
-
-    @property
-    def is_on(self):
-        """Return true if light is on."""
-        return self._state
-
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the light."""
         brightness = kwargs.get(ATTR_BRIGHTNESS, 255)
         effect = kwargs.get(ATTR_EFFECT)
@@ -134,7 +91,10 @@ class MyStromLight(LightEntity):
             color_h, color_s = kwargs[ATTR_HS_COLOR]
         elif ATTR_BRIGHTNESS in kwargs:
             # Brightness update, keep color
-            color_h, color_s = self._color_h, self._color_s
+            if self.hs_color is not None:
+                color_h, color_s = self.hs_color
+            else:
+                color_h, color_s = 0, 0  # Back to white
         else:
             color_h, color_s = 0, 0  # Back to white
 
@@ -152,18 +112,18 @@ class MyStromLight(LightEntity):
         except MyStromConnectionError:
             _LOGGER.warning("No route to myStrom bulb")
 
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the bulb."""
         try:
             await self._bulb.set_off()
         except MyStromConnectionError:
             _LOGGER.warning("The myStrom bulb not online")
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Fetch new state data for this light."""
         try:
             await self._bulb.get_state()
-            self._state = self._bulb.state
+            self._attr_is_on = self._bulb.state
 
             colors = self._bulb.color
             try:
@@ -172,11 +132,10 @@ class MyStromLight(LightEntity):
                 color_s, color_v = colors.split(";")
                 color_h = 0
 
-            self._color_h = int(color_h)
-            self._color_s = int(color_s)
-            self._brightness = int(color_v) * 255 / 100
+            self._attr_hs_color = int(color_h), int(color_s)
+            self._attr_brightness = int(int(color_v) * 255 / 100)
 
-            self._available = True
+            self._attr_available = True
         except MyStromConnectionError:
             _LOGGER.warning("No route to myStrom bulb")
-            self._available = False
+            self._attr_available = False

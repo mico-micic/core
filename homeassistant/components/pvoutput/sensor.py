@@ -14,29 +14,17 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    ATTR_TEMPERATURE,
-    ATTR_VOLTAGE,
-    ELECTRIC_POTENTIAL_VOLT,
-    ENERGY_KILO_WATT_HOUR,
-    ENERGY_WATT_HOUR,
-    POWER_KILO_WATT,
-    POWER_WATT,
-    TEMP_CELSIUS,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    ATTR_EFFICIENCY,
-    ATTR_ENERGY_CONSUMPTION,
-    ATTR_ENERGY_GENERATION,
-    ATTR_POWER_CONSUMPTION,
-    ATTR_POWER_GENERATION,
-    CONF_SYSTEM_ID,
-    DOMAIN,
-)
+from .const import CONF_SYSTEM_ID, DOMAIN
 from .coordinator import PVOutputDataUpdateCoordinator
 
 
@@ -57,16 +45,16 @@ class PVOutputSensorEntityDescription(
 SENSORS: tuple[PVOutputSensorEntityDescription, ...] = (
     PVOutputSensorEntityDescription(
         key="energy_consumption",
-        name="Energy Consumed",
-        native_unit_of_measurement=ENERGY_WATT_HOUR,
+        name="Energy consumed",
+        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda status: status.energy_consumption,
     ),
     PVOutputSensorEntityDescription(
         key="energy_generation",
-        name="Energy Generated",
-        native_unit_of_measurement=ENERGY_WATT_HOUR,
+        name="Energy generated",
+        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda status: status.energy_generation,
@@ -74,22 +62,24 @@ SENSORS: tuple[PVOutputSensorEntityDescription, ...] = (
     PVOutputSensorEntityDescription(
         key="normalized_output",
         name="Efficiency",
-        native_unit_of_measurement=f"{ENERGY_KILO_WATT_HOUR}/{POWER_KILO_WATT}",
+        native_unit_of_measurement=(
+            f"{UnitOfEnergy.KILO_WATT_HOUR}/{UnitOfPower.KILO_WATT}"
+        ),
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.normalized_output,
     ),
     PVOutputSensorEntityDescription(
         key="power_consumption",
-        name="Power Consumed",
-        native_unit_of_measurement=POWER_WATT,
+        name="Power consumed",
+        native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.power_consumption,
     ),
     PVOutputSensorEntityDescription(
         key="power_generation",
-        name="Power Generated",
-        native_unit_of_measurement=POWER_WATT,
+        name="Power generated",
+        native_unit_of_measurement=UnitOfPower.WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.power_generation,
@@ -97,7 +87,7 @@ SENSORS: tuple[PVOutputSensorEntityDescription, ...] = (
     PVOutputSensorEntityDescription(
         key="temperature",
         name="Temperature",
-        native_unit_of_measurement=TEMP_CELSIUS,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.temperature,
@@ -105,7 +95,7 @@ SENSORS: tuple[PVOutputSensorEntityDescription, ...] = (
     PVOutputSensorEntityDescription(
         key="voltage",
         name="Voltage",
-        native_unit_of_measurement=ELECTRIC_POTENTIAL_VOLT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.voltage,
@@ -133,11 +123,13 @@ async def async_setup_entry(
     )
 
 
-class PVOutputSensorEntity(CoordinatorEntity, SensorEntity):
+class PVOutputSensorEntity(
+    CoordinatorEntity[PVOutputDataUpdateCoordinator], SensorEntity
+):
     """Representation of a PVOutput sensor."""
 
-    coordinator: PVOutputDataUpdateCoordinator
     entity_description: PVOutputSensorEntityDescription
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -163,21 +155,3 @@ class PVOutputSensorEntity(CoordinatorEntity, SensorEntity):
     def native_value(self) -> int | float | None:
         """Return the state of the device."""
         return self.entity_description.value_fn(self.coordinator.data)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, int | float | None] | None:
-        """Return the state attributes of the monitored installation."""
-
-        # Only add attributes to the original sensor
-        if self.entity_description.key != "energy_generation":
-            return None
-
-        return {
-            ATTR_ENERGY_GENERATION: self.coordinator.data.energy_generation,
-            ATTR_POWER_GENERATION: self.coordinator.data.power_generation,
-            ATTR_ENERGY_CONSUMPTION: self.coordinator.data.energy_consumption,
-            ATTR_POWER_CONSUMPTION: self.coordinator.data.power_consumption,
-            ATTR_EFFICIENCY: self.coordinator.data.normalized_output,
-            ATTR_TEMPERATURE: self.coordinator.data.temperature,
-            ATTR_VOLTAGE: self.coordinator.data.voltage,
-        }

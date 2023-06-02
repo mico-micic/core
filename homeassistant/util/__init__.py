@@ -15,16 +15,15 @@ import slugify as unicode_slug
 
 from .dt import as_local, utcnow
 
-T = TypeVar("T")
-U = TypeVar("U")  # pylint: disable=invalid-name
+_T = TypeVar("_T")
+_U = TypeVar("_U")
 
 RE_SANITIZE_FILENAME = re.compile(r"(~|\.\.|/|\\)")
 RE_SANITIZE_PATH = re.compile(r"(~|\.(\.)+)")
 
 
 def raise_if_invalid_filename(filename: str) -> None:
-    """
-    Check if a filename is valid.
+    """Check if a filename is valid.
 
     Raises a ValueError if the filename is invalid.
     """
@@ -33,8 +32,7 @@ def raise_if_invalid_filename(filename: str) -> None:
 
 
 def raise_if_invalid_path(path: str) -> None:
-    """
-    Check if a path is valid.
+    """Check if a path is valid.
 
     Raises a ValueError if the path is invalid.
     """
@@ -63,8 +61,8 @@ def repr_helper(inp: Any) -> str:
 
 
 def convert(
-    value: T | None, to_type: Callable[[T], U], default: U | None = None
-) -> U | None:
+    value: _T | None, to_type: Callable[[_T], _U], default: _U | None = None
+) -> _U | None:
     """Convert value to to_type, returns default if fails."""
     try:
         return default if value is None else to_type(value)
@@ -105,7 +103,7 @@ class Throttle:
     """A class for throttling the execution of tasks.
 
     This method decorator adds a cooldown to a method to prevent it from being
-    called more then 1 time within the timedelta interval `min_time` after it
+    called more than 1 time within the timedelta interval `min_time` after it
     returned its result.
 
     Calling a method a second time during the interval will return None.
@@ -156,7 +154,7 @@ class Throttle:
         # be prefixed by '.<locals>.' so we strip that out.
         is_func = (
             not hasattr(method, "__self__")
-            and "." not in method.__qualname__.split(".<locals>.")[-1]
+            and "." not in method.__qualname__.rpartition(".<locals>.")[-1]
         )
 
         @wraps(method)
@@ -172,7 +170,7 @@ class Throttle:
             else:
                 host = args[0] if args else wrapper
 
-            # pylint: disable=protected-access # to _throttle
+            # pylint: disable=protected-access
             if not hasattr(host, "_throttle"):
                 host._throttle = {}
 

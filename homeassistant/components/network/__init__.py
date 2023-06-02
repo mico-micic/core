@@ -6,15 +6,24 @@ import logging
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import UNDEFINED, ConfigType, UndefinedType
 from homeassistant.loader import bind_hass
 
 from . import util
-from .const import IPV4_BROADCAST_ADDR, PUBLIC_TARGET_IP
+from .const import (
+    DOMAIN,
+    IPV4_BROADCAST_ADDR,
+    LOOPBACK_TARGET_IP,
+    MDNS_TARGET_IP,
+    PUBLIC_TARGET_IP,
+)
 from .models import Adapter
 from .network import Network, async_get_network
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
 @bind_hass
@@ -26,7 +35,7 @@ async def async_get_adapters(hass: HomeAssistant) -> list[Adapter]:
 
 @bind_hass
 async def async_get_source_ip(
-    hass: HomeAssistant, target_ip: str = PUBLIC_TARGET_IP
+    hass: HomeAssistant, target_ip: str | UndefinedType = UNDEFINED
 ) -> str:
     """Get the source ip for a target ip."""
     adapters = await async_get_adapters(hass)
@@ -35,14 +44,24 @@ async def async_get_source_ip(
         if adapter["enabled"] and (ipv4s := adapter["ipv4"]):
             all_ipv4s.extend([ipv4["address"] for ipv4 in ipv4s])
 
-    source_ip = util.async_get_source_ip(target_ip)
+    if target_ip is UNDEFINED:
+        source_ip = (
+            util.async_get_source_ip(PUBLIC_TARGET_IP)
+            or util.async_get_source_ip(MDNS_TARGET_IP)
+            or util.async_get_source_ip(LOOPBACK_TARGET_IP)
+        )
+    else:
+        source_ip = util.async_get_source_ip(target_ip)
+
     if not all_ipv4s:
         _LOGGER.warning(
-            "Because the system does not have any enabled IPv4 addresses, source address detection may be inaccurate"
+            "Because the system does not have any enabled IPv4 addresses, source"
+            " address detection may be inaccurate"
         )
         if source_ip is None:
             raise HomeAssistantError(
-                "Could not determine source ip because the system does not have any enabled IPv4 addresses and creating a socket failed"
+                "Could not determine source ip because the system does not have any"
+                " enabled IPv4 addresses and creating a socket failed"
             )
         return source_ip
 

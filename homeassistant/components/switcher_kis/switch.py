@@ -6,7 +6,7 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from aioswitcher.api import Command, SwitcherApi, SwitcherBaseResponse
+from aioswitcher.api import Command, SwitcherBaseResponse, SwitcherType1Api
 from aioswitcher.device import DeviceCategory, DeviceState
 import voluptuous as vol
 
@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     config_validation as cv,
-    device_registry,
+    device_registry as dr,
     entity_platform,
 )
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -78,7 +78,9 @@ async def async_setup_entry(
     )
 
 
-class SwitcherBaseSwitchEntity(CoordinatorEntity, SwitchEntity):
+class SwitcherBaseSwitchEntity(
+    CoordinatorEntity[SwitcherDataUpdateCoordinator], SwitchEntity
+):
     """Representation of a Switcher switch entity."""
 
     def __init__(self, coordinator: SwitcherDataUpdateCoordinator) -> None:
@@ -90,9 +92,7 @@ class SwitcherBaseSwitchEntity(CoordinatorEntity, SwitchEntity):
         self._attr_name = coordinator.name
         self._attr_unique_id = f"{coordinator.device_id}-{coordinator.mac_address}"
         self._attr_device_info = DeviceInfo(
-            connections={
-                (device_registry.CONNECTION_NETWORK_MAC, coordinator.mac_address)
-            }
+            connections={(dr.CONNECTION_NETWORK_MAC, coordinator.mac_address)}
         )
 
     @callback
@@ -108,7 +108,7 @@ class SwitcherBaseSwitchEntity(CoordinatorEntity, SwitchEntity):
         error = None
 
         try:
-            async with SwitcherApi(
+            async with SwitcherType1Api(
                 self.coordinator.data.ip_address, self.coordinator.data.device_id
             ) as swapi:
                 response = await getattr(swapi, api)(*args)

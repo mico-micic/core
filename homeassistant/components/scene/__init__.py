@@ -4,26 +4,24 @@ from __future__ import annotations
 import functools as ft
 import importlib
 import logging
-from typing import Any, final
+from typing import Any, Final, final
 
 import voluptuous as vol
 
 from homeassistant.components.light import ATTR_TRANSITION
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PLATFORM, SERVICE_TURN_ON
+from homeassistant.const import CONF_PLATFORM, SERVICE_TURN_ON, STATE_UNAVAILABLE
 from homeassistant.core import DOMAIN as HA_DOMAIN, HomeAssistant
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
-# mypy: allow-untyped-defs, no-check-untyped-defs
-
-DOMAIN = "scene"
-STATES = "states"
+DOMAIN: Final = "scene"
+STATES: Final = "states"
 
 
-def _hass_domain_validator(config):
+def _hass_domain_validator(config: dict[str, Any]) -> dict[str, Any]:
     """Validate platform in config for homeassistant domain."""
     if CONF_PLATFORM not in config:
         config = {CONF_PLATFORM: HA_DOMAIN, STATES: config}
@@ -31,7 +29,7 @@ def _hass_domain_validator(config):
     return config
 
 
-def _platform_validator(config):
+def _platform_validator(config: dict[str, Any]) -> dict[str, Any]:
     """Validate it is a valid  platform."""
     try:
         platform = importlib.import_module(f".{config[CONF_PLATFORM]}", __name__)
@@ -46,7 +44,7 @@ def _platform_validator(config):
     if not hasattr(platform, "PLATFORM_SCHEMA"):
         return config
 
-    return platform.PLATFORM_SCHEMA(config)
+    return platform.PLATFORM_SCHEMA(config)  # type: ignore[no-any-return]
 
 
 PLATFORM_SCHEMA = vol.Schema(
@@ -58,10 +56,12 @@ PLATFORM_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
+# mypy: disallow-any-generics
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the scenes."""
-    component = hass.data[DOMAIN] = EntityComponent(
+    component = hass.data[DOMAIN] = EntityComponent[Scene](
         logging.getLogger(__name__), DOMAIN, hass
     )
 
@@ -79,13 +79,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent = hass.data[DOMAIN]
+    component: EntityComponent[Scene] = hass.data[DOMAIN]
     return await component.async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent = hass.data[DOMAIN]
+    component: EntityComponent[Scene] = hass.data[DOMAIN]
     return await component.async_unload_entry(entry)
 
 
@@ -117,7 +117,11 @@ class Scene(RestoreEntity):
         """Call when the scene is added to hass."""
         await super().async_internal_added_to_hass()
         state = await self.async_get_last_state()
-        if state is not None and state.state is not None:
+        if (
+            state is not None
+            and state.state is not None
+            and state.state != STATE_UNAVAILABLE
+        ):
             self.__last_activated = state.state
 
     def activate(self, **kwargs: Any) -> None:

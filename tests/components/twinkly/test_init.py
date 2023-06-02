@@ -6,23 +6,19 @@ from uuid import uuid4
 from homeassistant.components.twinkly.const import (
     CONF_HOST,
     CONF_ID,
-    CONF_MODEL,
     CONF_NAME,
     DOMAIN as TWINKLY_DOMAIN,
 )
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_MODEL
 from homeassistant.core import HomeAssistant
 
+from . import TEST_HOST, TEST_MODEL, TEST_NAME_ORIGINAL, ClientMock
+
 from tests.common import MockConfigEntry
-from tests.components.twinkly import (
-    TEST_HOST,
-    TEST_MODEL,
-    TEST_NAME_ORIGINAL,
-    ClientMock,
-)
 
 
-async def test_load_unload_entry(hass: HomeAssistant):
+async def test_load_unload_entry(hass: HomeAssistant) -> None:
     """Validate that setup entry also configure the client."""
     client = ClientMock()
 
@@ -50,7 +46,7 @@ async def test_load_unload_entry(hass: HomeAssistant):
     assert config_entry.state == ConfigEntryState.NOT_LOADED
 
 
-async def test_config_entry_not_ready(hass: HomeAssistant):
+async def test_config_entry_not_ready(hass: HomeAssistant) -> None:
     """Validate that config entry is retried."""
     client = ClientMock()
     client.is_offline = True

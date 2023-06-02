@@ -9,8 +9,7 @@ turn_on:
   fields:
     transition:
       name: Transition
-      description:
-        Transition duration it takes to bring devices to the state
+      description: Transition duration it takes to bring devices to the state
         defined in the scene.
       selector:
         number:
@@ -30,7 +29,7 @@ apply:
       name: Entities state
       description: The entities and the state that they need to be.
       required: true
-      example:
+      example: |
         light.kitchen: "on"
         light.ceiling:
           state: "on"
@@ -39,8 +38,7 @@ apply:
         object:
     transition:
       name: Transition
-      description:
-        Transition duration it takes to bring devices to the state
+      description: Transition duration it takes to bring devices to the state
         defined in the scene.
       selector:
         number:
@@ -62,7 +60,7 @@ create:
     entities:
       name: Entities state
       description: The entities to control with the scene.
-      example:
+      example: |
         light.tv_back_light: "on"
         light.ceiling:
           state: "on"
@@ -72,7 +70,7 @@ create:
     snapshot_entities:
       name: Snapshot entities
       description: The entities of which a snapshot is to be taken
-      example:
+      example: |
         - light.ceiling
         - light.kitchen
       selector:

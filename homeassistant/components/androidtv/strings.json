@@ -2,8 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "Android TV",
-        "description": "Set required parameters to connect to your Android TV device",
         "data": {
           "host": "[%key:common::config_flow::data::host%]",
           "adbkey": "Path to your ADB key file (leave empty to auto generate)",
@@ -29,7 +27,6 @@
   "options": {
     "step": {
       "init": {
-        "title": "Android TV Options",
         "data": {
           "apps": "Configure applications list",
           "get_sources": "Retrieve the running apps as the list of sources",
@@ -41,7 +38,7 @@
         }
       },
       "apps": {
-        "title": "Configure Android TV Apps",
+        "title": "Configure Android Apps",
         "description": "Configure application id {app_id}",
         "data": {
           "app_name": "Application Name",
@@ -50,7 +47,7 @@
         }
       },
       "rules": {
-        "title": "Configure Android TV state detection rules",
+        "title": "Configure Android state detection rules",
         "description": "Configure detection rule for application id {rule_id}",
         "data": {
           "rule_id": "Application ID",

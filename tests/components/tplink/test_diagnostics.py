@@ -1,7 +1,6 @@
 """Tests for the diagnostics data provided by the TP-Link integration."""
 import json
 
-from aiohttp import ClientSession
 from kasa import SmartDevice
 import pytest
 
@@ -11,10 +10,11 @@ from . import _mocked_bulb, _mocked_plug, initialize_config_entry_for_device
 
 from tests.common import load_fixture
 from tests.components.diagnostics import get_diagnostics_for_config_entry
+from tests.typing import ClientSessionGenerator
 
 
 @pytest.mark.parametrize(
-    "mocked_dev,fixture_file,sysinfo_vars",
+    ("mocked_dev", "fixture_file", "sysinfo_vars"),
     [
         (
             _mocked_bulb(),
@@ -30,7 +30,7 @@ from tests.components.diagnostics import get_diagnostics_for_config_entry
 )
 async def test_diagnostics(
     hass: HomeAssistant,
-    hass_client: ClientSession,
+    hass_client: ClientSessionGenerator,
     mocked_dev: SmartDevice,
     fixture_file: str,
     sysinfo_vars: list[str],
@@ -38,7 +38,7 @@ async def test_diagnostics(
     """Test diagnostics for config entry."""
     diagnostics_data = json.loads(load_fixture(fixture_file, "tplink"))
 
-    mocked_dev._last_update = diagnostics_data["device_last_response"]
+    mocked_dev.internal_state = diagnostics_data["device_last_response"]
 
     config_entry = await initialize_config_entry_for_device(hass, mocked_dev)
     result = await get_diagnostics_for_config_entry(hass, hass_client, config_entry)

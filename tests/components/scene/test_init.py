@@ -9,9 +9,10 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ENTITY_MATCH_ALL,
     SERVICE_TURN_ON,
+    STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import State
+from homeassistant.core import HomeAssistant, State
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from homeassistant.util.yaml import loader as yaml_loader
@@ -24,10 +25,12 @@ def entities(hass):
     """Initialize the test light."""
     platform = getattr(hass.components, "test.light")
     platform.init()
-    yield platform.ENTITIES[0:2]
+    return platform.ENTITIES[0:2]
 
 
-async def test_config_yaml_alias_anchor(hass, entities, enable_custom_integrations):
+async def test_config_yaml_alias_anchor(
+    hass: HomeAssistant, entities, enable_custom_integrations: None
+) -> None:
     """Test the usage of YAML aliases and anchors.
 
     The following test scene configuration is equivalent to:
@@ -72,7 +75,9 @@ async def test_config_yaml_alias_anchor(hass, entities, enable_custom_integratio
     assert light_2.last_call("turn_on")[1].get("brightness") == 100
 
 
-async def test_config_yaml_bool(hass, entities, enable_custom_integrations):
+async def test_config_yaml_bool(
+    hass: HomeAssistant, entities, enable_custom_integrations: None
+) -> None:
     """Test parsing of booleans in yaml config."""
     light_1, light_2 = await setup_lights(hass, entities)
 
@@ -99,7 +104,9 @@ async def test_config_yaml_bool(hass, entities, enable_custom_integrations):
     assert light_2.last_call("turn_on")[1].get("brightness") == 100
 
 
-async def test_activate_scene(hass, entities, enable_custom_integrations):
+async def test_activate_scene(
+    hass: HomeAssistant, entities, enable_custom_integrations: None
+) -> None:
     """Test active scene."""
     light_1, light_2 = await setup_lights(hass, entities)
 
@@ -151,7 +158,9 @@ async def test_activate_scene(hass, entities, enable_custom_integrations):
     assert calls[0].data.get("transition") == 42
 
 
-async def test_restore_state(hass, entities, enable_custom_integrations):
+async def test_restore_state(
+    hass: HomeAssistant, entities, enable_custom_integrations: None
+) -> None:
     """Test we restore state integration."""
     mock_restore_cache(hass, (State("scene.test", "2021-01-01T23:59:59+00:00"),))
 
@@ -177,6 +186,34 @@ async def test_restore_state(hass, entities, enable_custom_integrations):
     assert hass.states.get("scene.test").state == "2021-01-01T23:59:59+00:00"
 
 
+async def test_restore_state_does_not_restore_unavailable(
+    hass: HomeAssistant, entities, enable_custom_integrations: None
+) -> None:
+    """Test we restore state integration but ignore unavailable."""
+    mock_restore_cache(hass, (State("scene.test", STATE_UNAVAILABLE),))
+
+    light_1, light_2 = await setup_lights(hass, entities)
+
+    assert await async_setup_component(
+        hass,
+        scene.DOMAIN,
+        {
+            "scene": [
+                {
+                    "name": "test",
+                    "entities": {
+                        light_1.entity_id: "on",
+                        light_2.entity_id: "on",
+                    },
+                }
+            ]
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get("scene.test").state == STATE_UNKNOWN
+
+
 async def activate(hass, entity_id=ENTITY_MATCH_ALL):
     """Activate a scene."""
     data = {}
@@ -187,7 +224,7 @@ async def activate(hass, entity_id=ENTITY_MATCH_ALL):
     await hass.services.async_call(scene.DOMAIN, SERVICE_TURN_ON, data, blocking=True)
 
 
-async def test_services_registered(hass):
+async def test_services_registered(hass: HomeAssistant) -> None:
     """Test we register services with empty config."""
     assert await async_setup_component(hass, "scene", {})
     assert hass.services.has_service("scene", "reload")

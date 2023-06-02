@@ -3,10 +3,14 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import UptimeRobotDataUpdateCoordinator
@@ -38,19 +42,19 @@ async def async_setup_entry(
     """Set up the UptimeRobot sensors."""
     coordinator: UptimeRobotDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        [
-            UptimeRobotSensor(
-                coordinator,
-                SensorEntityDescription(
-                    key=str(monitor.id),
-                    name=monitor.friendly_name,
-                    entity_category=EntityCategory.DIAGNOSTIC,
-                    device_class="uptimerobot__monitor_status",
-                ),
-                monitor=monitor,
-            )
-            for monitor in coordinator.data
-        ],
+        UptimeRobotSensor(
+            coordinator,
+            SensorEntityDescription(
+                key=str(monitor.id),
+                name=monitor.friendly_name,
+                entity_category=EntityCategory.DIAGNOSTIC,
+                device_class=SensorDeviceClass.ENUM,
+                options=["down", "not_checked_yet", "pause", "seems_down", "up"],
+                translation_key="monitor_status",
+            ),
+            monitor=monitor,
+        )
+        for monitor in coordinator.data
     )
 
 

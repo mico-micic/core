@@ -1,17 +1,12 @@
 """Support for RFXtrx sirens."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import RFXtrx as rfxtrxmod
 
-from homeassistant.components.siren import (
-    SUPPORT_TONES,
-    SUPPORT_TURN_OFF,
-    SUPPORT_TURN_ON,
-    SirenEntity,
-)
-from homeassistant.components.siren.const import ATTR_TONE
+from homeassistant.components.siren import ATTR_TONE, SirenEntity, SirenEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity import Entity
@@ -20,21 +15,18 @@ from homeassistant.helpers.event import async_call_later
 
 from . import (
     DEFAULT_OFF_DELAY,
-    DEFAULT_SIGNAL_REPETITIONS,
     DeviceTuple,
     RfxtrxCommandEntity,
     async_setup_platform_entry,
 )
-from .const import CONF_OFF_DELAY, CONF_SIGNAL_REPETITIONS
-
-SUPPORT_RFXTRX = SUPPORT_TURN_ON | SUPPORT_TONES
+from .const import CONF_OFF_DELAY
 
 SECURITY_PANIC_ON = "Panic"
 SECURITY_PANIC_OFF = "End Panic"
 SECURITY_PANIC_ALL = {SECURITY_PANIC_ON, SECURITY_PANIC_OFF}
 
 
-def supported(event: rfxtrxmod.RFXtrxEvent):
+def supported(event: rfxtrxmod.RFXtrxEvent) -> bool:
     """Return whether an event supports sirens."""
     device = event.device
 
@@ -66,8 +58,8 @@ async def async_setup_entry(
         event: rfxtrxmod.RFXtrxEvent,
         auto: rfxtrxmod.RFXtrxEvent | None,
         device_id: DeviceTuple,
-        entity_info: dict,
-    ):
+        entity_info: dict[str, Any],
+    ) -> list[Entity]:
         """Construct a entity from an event."""
         device = event.device
 
@@ -76,9 +68,6 @@ async def async_setup_entry(
                 RfxtrxChime(
                     event.device,
                     device_id,
-                    entity_info.get(
-                        CONF_SIGNAL_REPETITIONS, DEFAULT_SIGNAL_REPETITIONS
-                    ),
                     entity_info.get(CONF_OFF_DELAY, DEFAULT_OFF_DELAY),
                     auto,
                 )
@@ -92,13 +81,11 @@ async def async_setup_entry(
                     RfxtrxSecurityPanic(
                         event.device,
                         device_id,
-                        entity_info.get(
-                            CONF_SIGNAL_REPETITIONS, DEFAULT_SIGNAL_REPETITIONS
-                        ),
                         entity_info.get(CONF_OFF_DELAY, DEFAULT_OFF_DELAY),
                         auto,
                     )
                 ]
+        return []
 
     await async_setup_platform_entry(
         hass, config_entry, async_add_entities, supported, _constructor
@@ -118,42 +105,51 @@ class RfxtrxOffDelayMixin(Entity):
     _timeout: CALLBACK_TYPE | None = None
     _off_delay: float | None = None
 
-    def _setup_timeout(self):
+    def _setup_timeout(self) -> None:
         @callback
-        def _done(_):
+        def _done(_: datetime) -> None:
             self._timeout = None
             self.async_write_ha_state()
 
         if self._off_delay:
             self._timeout = async_call_later(self.hass, self._off_delay, _done)
 
-    def _cancel_timeout(self):
+    def _cancel_timeout(self) -> None:
         if self._timeout:
             self._timeout()
             self._timeout = None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Run when entity will be removed from hass."""
+        self._cancel_timeout()
+        return await super().async_will_remove_from_hass()
 
 
 class RfxtrxChime(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin):
     """Representation of a RFXtrx chime."""
 
+    _attr_supported_features = SirenEntityFeature.TURN_ON | SirenEntityFeature.TONES
     _device: rfxtrxmod.ChimeDevice
 
     def __init__(
-        self, device, device_id, signal_repetitions=1, off_delay=None, event=None
-    ):
+        self,
+        device: rfxtrxmod.RFXtrxDevice,
+        device_id: DeviceTuple,
+        off_delay: float | None = None,
+        event: rfxtrxmod.RFXtrxEvent | None = None,
+    ) -> None:
         """Initialize the entity."""
-        super().__init__(device, device_id, signal_repetitions, event)
+        super().__init__(device, device_id, event)
         self._attr_available_tones = list(self._device.COMMANDS.values())
-        self._attr_supported_features = SUPPORT_TURN_ON | SUPPORT_TONES
         self._default_tone = next(iter(self._device.COMMANDS))
         self._off_delay = off_delay
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if device is on."""
         return self._timeout is not None
 
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the device on."""
         self._cancel_timeout()
 
@@ -168,7 +164,7 @@ class RfxtrxChime(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin):
 
         self.async_write_ha_state()
 
-    def _apply_event(self, event: rfxtrxmod.ControlEvent):
+    def _apply_event(self, event: rfxtrxmod.ControlEvent) -> None:
         """Apply a received event."""
         super()._apply_event(event)
 
@@ -178,7 +174,9 @@ class RfxtrxChime(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin):
             self._setup_timeout()
 
     @callback
-    def _handle_event(self, event, device_id):
+    def _handle_event(
+        self, event: rfxtrxmod.RFXtrxEvent, device_id: DeviceTuple
+    ) -> None:
         """Check if event applies to me and update."""
         if self._event_applies(event, device_id):
             self._apply_event(event)
@@ -189,24 +187,28 @@ class RfxtrxChime(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin):
 class RfxtrxSecurityPanic(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin):
     """Representation of a security device."""
 
+    _attr_supported_features = SirenEntityFeature.TURN_ON | SirenEntityFeature.TURN_OFF
     _device: rfxtrxmod.SecurityDevice
 
     def __init__(
-        self, device, device_id, signal_repetitions=1, off_delay=None, event=None
-    ):
+        self,
+        device: rfxtrxmod.RFXtrxDevice,
+        device_id: DeviceTuple,
+        off_delay: float | None = None,
+        event: rfxtrxmod.RFXtrxEvent | None = None,
+    ) -> None:
         """Initialize the entity."""
-        super().__init__(device, device_id, signal_repetitions, event)
-        self._attr_supported_features = SUPPORT_TURN_ON | SUPPORT_TURN_OFF
+        super().__init__(device, device_id, event)
         self._on_value = get_first_key(self._device.STATUS, SECURITY_PANIC_ON)
         self._off_value = get_first_key(self._device.STATUS, SECURITY_PANIC_OFF)
         self._off_delay = off_delay
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if device is on."""
         return self._timeout is not None
 
-    async def async_turn_on(self, **kwargs: Any):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the device on."""
         self._cancel_timeout()
 
@@ -224,7 +226,7 @@ class RfxtrxSecurityPanic(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin)
 
         self.async_write_ha_state()
 
-    def _apply_event(self, event: rfxtrxmod.SensorEvent):
+    def _apply_event(self, event: rfxtrxmod.SensorEvent) -> None:
         """Apply a received event."""
         super()._apply_event(event)
 
@@ -237,7 +239,9 @@ class RfxtrxSecurityPanic(RfxtrxCommandEntity, SirenEntity, RfxtrxOffDelayMixin)
             self._cancel_timeout()
 
     @callback
-    def _handle_event(self, event, device_id):
+    def _handle_event(
+        self, event: rfxtrxmod.RFXtrxEvent, device_id: DeviceTuple
+    ) -> None:
         """Check if event applies to me and update."""
         if self._event_applies(event, device_id):
             self._apply_event(event)

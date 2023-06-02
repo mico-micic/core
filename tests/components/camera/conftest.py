@@ -4,10 +4,17 @@ from unittest.mock import PropertyMock, patch
 import pytest
 
 from homeassistant.components import camera
-from homeassistant.components.camera.const import STREAM_TYPE_HLS, STREAM_TYPE_WEB_RTC
+from homeassistant.components.camera.const import StreamType
+from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
 from .common import WEBRTC_ANSWER
+
+
+@pytest.fixture(autouse=True)
+async def setup_homeassistant(hass: HomeAssistant):
+    """Set up the homeassistant integration."""
+    await async_setup_component(hass, "homeassistant", {})
 
 
 @pytest.fixture(name="mock_camera")
@@ -30,7 +37,7 @@ async def mock_camera_hls_fixture(mock_camera):
     """Initialize a demo camera platform with HLS."""
     with patch(
         "homeassistant.components.camera.Camera.frontend_stream_type",
-        new_callable=PropertyMock(return_value=STREAM_TYPE_HLS),
+        new_callable=PropertyMock(return_value=StreamType.HLS),
     ):
         yield
 
@@ -45,7 +52,7 @@ async def mock_camera_web_rtc_fixture(hass):
 
     with patch(
         "homeassistant.components.camera.Camera.frontend_stream_type",
-        new_callable=PropertyMock(return_value=STREAM_TYPE_WEB_RTC),
+        new_callable=PropertyMock(return_value=StreamType.WEB_RTC),
     ), patch(
         "homeassistant.components.camera.Camera.async_handle_web_rtc_offer",
         return_value=WEBRTC_ANSWER,
