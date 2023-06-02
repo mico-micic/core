@@ -1,17 +1,13 @@
 {
   "domain": "vzug",
   "name": "V-ZUG",
+  "codeowners": ["@mico-micic"],
   "config_flow": true,
-  "documentation": "https://www.home-assistant.io/integrations/vzug",
-  "requirements": [
-    "vzug-api==0.1.0"
-  ],
-  "ssdp": [],
-  "zeroconf": [],
-  "homekit": {},
   "dependencies": [],
-  "codeowners": [
-    "@mico-micic"
-  ],
-  "iot_class": "local_polling"
+  "documentation": "https://www.home-assistant.io/integrations/vzug",
+  "homekit": {},
+  "iot_class": "local_polling",
+  "requirements": ["vzug-api==0.1.0"],
+  "ssdp": [],
+  "zeroconf": []
 }

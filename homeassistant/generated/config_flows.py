@@ -497,6 +497,7 @@ FLOWS = {
         "volumio",
         "volvooncall",
         "vulcan",
+        "vzug",
         "wallbox",
         "watttime",
         "waze_travel_time",
