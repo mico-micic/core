@@ -1,6 +1,7 @@
 {
   "domain": "vzug",
   "name": "V-ZUG",
+  "version": "0.0.1",
   "codeowners": ["@mico-micic"],
   "config_flow": true,
   "dependencies": [],
